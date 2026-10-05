@@ -22,10 +22,18 @@ pnpm migration:run        # build, then apply migrations to DATABASE_URL
 ```
 src/
 ├── config/      environment validation (the app refuses to start if invalid)
-├── common/      cross-cutting filter, decorators, helpers
+├── common/      cross-cutting filter, guards, decorators, errors, text helpers
+├── cache/       CacheService: fail-open cache-aside with versioned namespaces
 ├── database/    TypeORM connection, health check, migrations/
 ├── redis/       Redis client provider and health check
-└── modules/     one folder per domain: auth, users, health
+└── modules/
+    ├── auth/        Google sign-in, tokens, guards
+    ├── users/       accounts and seller profile (delivery location, bank)
+    ├── banks/       static directory of banks that accept VietQR
+    ├── categories/  reference data, seeded by migration
+    ├── listings/    listings, items, images, search
+    ├── storage/     StorageService (local disk today) and /media
+    └── health/
 test/            integration tests (*.e2e-spec.ts) and their helpers
 ```
 
@@ -50,7 +58,7 @@ test/            integration tests (*.e2e-spec.ts) and their helpers
 
 1. Create `src/modules/<name>/` with `<name>.entity.ts`, `<name>.repository.ts`, `<name>.service.ts`, `<name>.controller.ts`, `dto/`, `<name>.module.ts`.
 2. Register the module in `src/app.module.ts`.
-3. Protect routes with `@UseGuards(JwtAuthGuard)` and read the caller with `@CurrentUser()`.
+3. Protect routes with `@UseGuards(JwtAuthGuard)` and read the caller with `@CurrentUser()`. Rate-limit writes with `UserThrottlerGuard` after it.
 4. Annotate every response DTO with `@ApiProperty` and every route with its `@Api*Response`; the frontend generates its types from `/docs-json`.
 
 ## Database changes
@@ -66,6 +74,51 @@ Throw NestJS HTTP exceptions (`NotFoundException`, `ConflictException`, ...).
 `AllExceptionsFilter` turns everything into
 `{ statusCode, code, message, timestamp, path }`. Never build error responses
 by hand in a controller.
+
+Use `DomainException(status, code, message)` when the frontend must react to a
+specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
+(422), `TOO_MANY_IMAGES` (409), `INVALID_LISTING_STATE` (409).
+
+## Listings
+
+- A listing has a mode, `in_stock` or `preorder`, that never changes. In-stock
+  items have stock; pre-order listings have an order deadline and a delivery
+  date and unlimited items.
+- A listing is **open** when `status = 'open'` and its deadline, if any, is in
+  the future. That condition is evaluated in queries and in `isListingOpen`;
+  no background job flips a status.
+- Rules that depend only on the input live in `listing-rules.ts` as pure
+  functions. DTO classes check shape and types only.
+- Money is integer VND. Quantities are `numeric(10,3)` and arrive from
+  PostgreSQL as strings.
+- Other people get 404, not 403, for a listing they may not see.
+
+## Search
+
+- `normalizeForSearch` (strip Vietnamese diacritics, lower-case) is applied to
+  the stored `search_text` and to every user query. Never compare raw text.
+- `toTsQuery` is the only way a user query reaches `to_tsquery`. It keeps
+  letters and digits only, so search operators cannot be injected.
+- Browsing pages by keyset on `(published_at, id)`; ranked results page by
+  offset. Cursors are opaque and validated in `listing-cursor.ts`.
+
+## Cache
+
+- Read through `CacheService.getOrSet`. It never fails a request: when Redis
+  is down it calls the loader.
+- Keys embed a namespace version: `listings:v{n}:...`. **Every write to a
+  listing, its items or its images must call
+  `cache.bumpVersion(LISTINGS_CACHE_NAMESPACE)`.**
+- Cache public data only. Drafts, closed listings and per-user lists are read
+  from the database.
+
+## Uploads
+
+- Images are re-encoded to WebP by `processListingImage`, which reads the
+  format from the bytes and drops EXIF. Never store an upload as received.
+- Files go through `StorageService`; do not use `fs` elsewhere. Storage keys
+  must match the allowlist in `local-storage.service.ts`.
+- `/media/*` requires a session.
 
 ## Auth
 
@@ -92,6 +145,7 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth client |
 | `ALLOWED_EMAIL_DOMAIN` | Only this email domain may sign in |
 | `JWT_ACCESS_SECRET` | At least 32 characters |
+| `UPLOAD_DIR` | Directory for uploaded images (default `./uploads`) |
 
 ## Conventions
 

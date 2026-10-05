@@ -51,6 +51,11 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(32)
   JWT_ACCESS_SECRET!: string;
+
+  /** Directory where uploaded images are stored on local disk. */
+  @IsString()
+  @MinLength(1)
+  UPLOAD_DIR: string = './uploads';
 }
 
 export function validateEnv(

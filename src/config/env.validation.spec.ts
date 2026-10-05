@@ -33,6 +33,7 @@ describe('validateEnv', () => {
 
     expect(env.NODE_ENV).toBe('development');
     expect(env.PORT).toBe(4000);
+    expect(env.UPLOAD_DIR).toBe('./uploads');
   });
 
   it('names every missing variable in the error', () => {

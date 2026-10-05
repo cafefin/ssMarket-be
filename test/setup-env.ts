@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Runs before every test file. Forces the test database and a separate Redis
 // database so a test run can never wipe development data.
@@ -14,3 +16,4 @@ process.env.GOOGLE_CLIENT_ID = 'test-client-id';
 process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 process.env.ALLOWED_EMAIL_DOMAIN = 'example.com';
 process.env.JWT_ACCESS_SECRET = 'test-secret-test-secret-test-secret-1234';
+process.env.UPLOAD_DIR = join(tmpdir(), 'ssmarket-test-uploads');

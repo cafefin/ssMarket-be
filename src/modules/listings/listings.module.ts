@@ -3,6 +3,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { CategoriesModule } from '../categories/categories.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { ListingImage } from './listing-image.entity.js';
+import { ListingImagesController } from './listing-images.controller.js';
+import { ListingImagesRepository } from './listing-images.repository.js';
+import { ListingImagesService } from './listing-images.service.js';
 import { ListingItem } from './listing-item.entity.js';
 import { Listing } from './listing.entity.js';
 import {
@@ -18,8 +21,17 @@ import { ListingsService } from './listings.service.js';
     UsersModule,
     CategoriesModule,
   ],
-  controllers: [ListingsController, MyListingsController],
-  providers: [ListingsRepository, ListingsService],
+  controllers: [
+    ListingsController,
+    MyListingsController,
+    ListingImagesController,
+  ],
+  providers: [
+    ListingsRepository,
+    ListingsService,
+    ListingImagesRepository,
+    ListingImagesService,
+  ],
   exports: [ListingsService],
 })
 export class ListingsModule {}

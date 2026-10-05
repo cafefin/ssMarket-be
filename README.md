@@ -3,7 +3,7 @@
 API for ssMarket, an internal marketplace where company employees buy and sell
 personal items. The web app lives in a separate repository, `ssMarket-fe`.
 
-**Stack:** NestJS · TypeScript · PostgreSQL (TypeORM) · Redis · Google OAuth · Vitest · Docker · GitHub Actions
+**Stack:** NestJS · TypeScript · PostgreSQL (TypeORM, full-text search) · Redis · Google OAuth · sharp · Vitest · Docker · GitHub Actions
 
 ## Getting started
 
@@ -30,6 +30,16 @@ pnpm test        # unit
 pnpm test:e2e    # integration, needs docker compose up
 pnpm test:cov    # everything, fails under 80% coverage
 ```
+
+## Features
+
+- Listings in two modes: in-stock items with stock, and pre-order rounds with
+  an order deadline and a delivery date.
+- Search that matches Vietnamese text typed with or without diacritics, built
+  on PostgreSQL full-text search.
+- Image uploads re-encoded to WebP with metadata removed, stored on local disk
+  (`UPLOAD_DIR`) behind a storage interface.
+- Redis cache for public listing reads, invalidated by a namespace version.
 
 ## How sign-in works
 

@@ -14,6 +14,7 @@ import { BanksModule } from './modules/banks/banks.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
+import { StorageModule } from './modules/storage/storage.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { RedisModule } from './redis/redis.module.js';
 
@@ -33,6 +34,7 @@ import { RedisModule } from './redis/redis.module.js';
     DatabaseModule,
     RedisModule,
     CacheModule,
+    StorageModule,
     BanksModule,
     CategoriesModule,
     UsersModule,
