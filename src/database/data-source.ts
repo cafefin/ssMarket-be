@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
+import { Category } from '../modules/categories/category.entity.js';
 import { User } from '../modules/users/user.entity.js';
 import { migrations } from './migrations/index.js';
 
@@ -8,6 +9,6 @@ import { migrations } from './migrations/index.js';
 export default new DataSource({
   type: 'postgres',
   url: process.env.DATABASE_URL,
-  entities: [User],
+  entities: [User, Category],
   migrations,
 });

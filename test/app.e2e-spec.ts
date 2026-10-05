@@ -236,6 +236,35 @@ describe('ssMarket API', () => {
     });
   });
 
+  describe('GET /categories', () => {
+    it('requires a session', async () => {
+      await request(server()).get('/categories').expect(401);
+    });
+
+    it('lists the seeded categories in order', async () => {
+      const agent = request.agent(server());
+      await agent.get('/auth/google/callback').expect(302);
+
+      const response = await agent.get('/categories').expect(200);
+
+      expect(
+        (response.body as Array<{ slug: string }>).map((c) => c.slug),
+      ).toEqual([
+        'do-cu',
+        'thuc-pham-tuoi',
+        'do-an',
+        'dien-tu',
+        'gia-dung',
+        'khac',
+      ]);
+      expect(response.body).toContainEqual({
+        id: 2,
+        slug: 'thuc-pham-tuoi',
+        name: 'Thực phẩm tươi',
+      });
+    });
+  });
+
   describe('GET /banks', () => {
     it('requires a session', async () => {
       await request(server()).get('/banks').expect(401);
