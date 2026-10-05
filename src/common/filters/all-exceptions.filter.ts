@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { DomainException } from '../errors/domain.exception.js';
 
 interface ErrorBody {
   statusCode: number;
@@ -43,6 +44,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
         statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
         code: 'INTERNAL_SERVER_ERROR',
         message: 'Internal server error',
+      };
+    }
+
+    if (exception instanceof DomainException) {
+      return {
+        statusCode: exception.getStatus(),
+        code: exception.code,
+        message: exception.message,
       };
     }
 

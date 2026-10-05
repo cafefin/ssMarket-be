@@ -5,6 +5,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../../src/app.module.js';
 import { configureApp } from '../../src/app.setup.js';
+import { UserThrottlerGuard } from '../../src/common/guards/user-throttler.guard.js';
 import type { GoogleIdentity } from '../../src/modules/auth/auth.types.js';
 import { GoogleAuthGuard } from '../../src/modules/auth/guards/google-auth.guard.js';
 
@@ -26,6 +27,8 @@ export async function createTestApp(identity: {
       },
     })
     .overrideGuard(ThrottlerGuard)
+    .useValue({ canActivate: () => true })
+    .overrideGuard(UserThrottlerGuard)
     .useValue({ canActivate: () => true })
     .compile();
 

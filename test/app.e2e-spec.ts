@@ -51,7 +51,7 @@ describe('ssMarket API', () => {
 
   beforeEach(async () => {
     identity.current = employee;
-    await dataSource.query('TRUNCATE TABLE users');
+    await dataSource.query('TRUNCATE TABLE users CASCADE');
     await redis.flushdb();
   });
 

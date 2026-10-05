@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { DomainException } from '../errors/domain.exception.js';
 import { AllExceptionsFilter } from './all-exceptions.filter.js';
 
 function hostFor(url: string) {
@@ -42,6 +43,24 @@ describe('AllExceptionsFilter', () => {
       path: '/users/me',
     });
     expect(logError).not.toHaveBeenCalled();
+  });
+
+  it('uses the code carried by a DomainException', () => {
+    const { host, status, json } = hostFor('/listings');
+
+    filter.catch(
+      new DomainException(422, 'BANK_PROFILE_REQUIRED', 'Add bank details'),
+      host,
+    );
+
+    expect(status).toHaveBeenCalledWith(422);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: 422,
+        code: 'BANK_PROFILE_REQUIRED',
+        message: 'Add bank details',
+      }),
+    );
   });
 
   it('reports validation errors as VALIDATION_FAILED with joined messages', () => {

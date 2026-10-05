@@ -1,0 +1,45 @@
+import {
+  Column,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  type Relation,
+} from 'typeorm';
+import { Listing } from './listing.entity.js';
+
+@Entity('listing_items')
+export class ListingItem {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ name: 'listing_id', type: 'uuid' })
+  listingId!: string;
+
+  @ManyToOne(() => Listing, (listing) => listing.items, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'listing_id' })
+  listing!: Relation<Listing>;
+
+  @Column({ type: 'varchar', length: 120 })
+  name!: string;
+
+  @Column({ type: 'varchar', length: 16 })
+  unit!: string;
+
+  /** Integer VND. */
+  @Column({ name: 'unit_price', type: 'integer' })
+  unitPrice!: number;
+
+  /** PostgreSQL numeric arrives as a string; null means unlimited. */
+  @Column({
+    name: 'stock_quantity',
+    type: 'numeric',
+    precision: 10,
+    scale: 3,
+    nullable: true,
+  })
+  stockQuantity!: string | null;
+
+  @Column({ name: 'sort_order', type: 'smallint' })
+  sortOrder!: number;
+}
