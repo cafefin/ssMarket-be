@@ -306,6 +306,9 @@ describe('Listings API', () => {
         `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
         [id],
       );
+      // The deadline was moved behind the API's back, so drop the cached copy
+      // that still carries the old one.
+      await redis.flushdb();
 
       await buyer.get(`/listings/${id}`).expect(404);
       const own = await seller.get(`/listings/${id}`).expect(200);
@@ -351,6 +354,196 @@ describe('Listings API', () => {
       expect(none.body).toEqual([]);
 
       await seller.get('/users/me/listings?status=nonsense').expect(400);
+    });
+  });
+
+  describe('GET /listings', () => {
+    type Page = {
+      items: Array<{ id: string; title: string }>;
+      nextCursor: string | null;
+    };
+    const titles = (body: unknown) => (body as Page).items.map((l) => l.title);
+    const search = async (query: string) =>
+      (await buyer.get(`/listings?${query}`).expect(200)).body as Page;
+
+    it('returns open listings newest first with summary fields', async () => {
+      await createOpen();
+      const fruit = await createOpen(preorder());
+
+      const response = await buyer.get('/listings').expect(200);
+
+      expect(titles(response.body)).toEqual([
+        'Hoa quả tuần 41',
+        'Loa bluetooth cũ',
+      ]);
+      expect((response.body as Page).items[0]).toMatchObject({
+        id: fruit,
+        mode: 'preorder',
+        category: { slug: 'thuc-pham-tuoi' },
+        seller: { name: 'seller' },
+        thumbnailUrl: null,
+        minUnitPrice: 35000,
+        minPriceUnit: 'kg',
+      });
+      expect((response.body as Page).nextCursor).toBeNull();
+    });
+
+    it('finds Vietnamese text typed with or without diacritics', async () => {
+      await createOpen(preorder());
+      await createOpen();
+
+      expect(titles(await search('q=hoa%20qua'))).toEqual(['Hoa quả tuần 41']);
+      expect(
+        titles(await search(`q=${encodeURIComponent('HOA QUẢ')}`)),
+      ).toEqual(['Hoa quả tuần 41']);
+    });
+
+    it('finds a listing by an item name and by a prefix', async () => {
+      await createOpen({
+        ...inStock,
+        title: 'Thanh lý đồ cũ',
+        description: '',
+      });
+      await createOpen(preorder());
+
+      expect(titles(await search('q=jbl'))).toEqual(['Thanh lý đồ cũ']);
+      expect(titles(await search('q=lo'))).toEqual(['Thanh lý đồ cũ']);
+      expect(titles(await search('q=loa%20xyz'))).toEqual([]);
+    });
+
+    it('treats search operators and SQL in the query as plain text', async () => {
+      await createOpen();
+
+      const response = await buyer
+        .get(`/listings?q=${encodeURIComponent("loa' OR 1=1 -- & | !")}`)
+        .expect(200);
+
+      expect(titles(response.body)).toEqual([]);
+      expect(titles(await search(`q=${encodeURIComponent('!!! &')}`))).toEqual([
+        'Loa bluetooth cũ',
+      ]);
+    });
+
+    it('filters by category and mode', async () => {
+      await createOpen();
+      await createOpen(preorder());
+
+      expect(titles(await search('category=dien-tu'))).toEqual([
+        'Loa bluetooth cũ',
+      ]);
+      expect(titles(await search('mode=preorder'))).toEqual([
+        'Hoa quả tuần 41',
+      ]);
+      expect(titles(await search('category=dien-tu&mode=preorder'))).toEqual(
+        [],
+      );
+      expect(titles(await search('category=khong-co'))).toEqual([]);
+      await buyer.get('/listings?mode=nonsense').expect(400);
+    });
+
+    it('never lists drafts, closed listings or expired pre-orders', async () => {
+      await createDraft();
+      const closed = await createOpen({ ...inStock, title: 'Đã đóng rồi' });
+      await seller.post(`/listings/${closed}/close`).expect(200);
+      const expired = await createOpen(preorder());
+      await dataSource.query(
+        `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
+        [expired],
+      );
+      await redis.flushdb();
+
+      expect(titles(await search(''))).toEqual([]);
+      expect(titles(await search('q=hoa'))).toEqual([]);
+    });
+
+    it('pages through every listing exactly once, newest first', async () => {
+      const created: string[] = [];
+      for (let i = 0; i < 30; i += 1) {
+        created.push(
+          await createOpen({ ...inStock, title: `Loa số ${i + 1}` }),
+        );
+      }
+
+      for (const query of ['', 'q=loa&']) {
+        const seen: string[] = [];
+        let cursor: string | null = null;
+        let pages = 0;
+        do {
+          const page: Page = await search(
+            `${query}limit=12${cursor ? `&cursor=${cursor}` : ''}`,
+          );
+          seen.push(...page.items.map((l) => l.id));
+          cursor = page.nextCursor;
+          pages += 1;
+        } while (cursor !== null);
+
+        expect(pages).toBe(3);
+        expect(new Set(seen).size).toBe(30);
+        expect([...seen].sort()).toEqual([...created].sort());
+        if (query === '') {
+          expect(seen).toEqual([...created].reverse());
+        }
+      }
+    });
+
+    it('clamps the limit and rejects a malformed or mismatched cursor', async () => {
+      for (let i = 0; i < 3; i += 1) {
+        await createOpen({ ...inStock, title: `Loa số ${i + 1}` });
+      }
+
+      expect((await search('limit=0')).items).toHaveLength(1);
+      expect((await search('limit=999')).items).toHaveLength(3);
+      await buyer.get('/listings?cursor=garbage').expect(400);
+
+      const first = await search('limit=1');
+      await buyer.get(`/listings?q=loa&cursor=${first.nextCursor}`).expect(400);
+    });
+
+    it('shows an edit immediately in the list and the detail', async () => {
+      const id = await createOpen();
+      await search('');
+      await buyer.get(`/listings/${id}`).expect(200);
+
+      await seller
+        .patch(`/listings/${id}`)
+        .send({ ...inStock, title: 'Loa bluetooth giá mới' })
+        .expect(200);
+
+      expect(titles(await search(''))).toEqual(['Loa bluetooth giá mới']);
+      const detail = await buyer.get(`/listings/${id}`).expect(200);
+      expect(detail.body).toMatchObject({ title: 'Loa bluetooth giá mới' });
+    });
+
+    it('serves repeated requests from the cache', async () => {
+      const id = await createOpen();
+      await search('');
+      await buyer.get(`/listings/${id}`).expect(200);
+
+      const keys = await redis.keys('listings:v*');
+
+      expect(keys.some((key) => key.includes(':list:'))).toBe(true);
+      expect(keys.some((key) => key.endsWith(`:detail:${id}`))).toBe(true);
+    });
+
+    it('does not cache a draft', async () => {
+      const id = await createDraft();
+      await seller.get(`/listings/${id}`).expect(200);
+      await buyer.get(`/listings/${id}`).expect(404);
+
+      expect(await redis.keys('listings:v*:detail:*')).toEqual([]);
+    });
+
+    it('keeps working when Redis reads fail', async () => {
+      await createOpen();
+      const get = vi
+        .spyOn(redis, 'get')
+        .mockRejectedValue(new Error('redis down'));
+
+      try {
+        expect(titles(await search(''))).toEqual(['Loa bluetooth cũ']);
+      } finally {
+        get.mockRestore();
+      }
     });
   });
 });

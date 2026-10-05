@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ListingItem } from './listing-item.entity.js';
+import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
 import type { ListingMode, ListingStatus } from './listings.constants.js';
 
@@ -28,6 +29,35 @@ export interface ListingItemFields {
   unitPrice: number;
   stockQuantity: string | null;
   sortOrder: number;
+}
+
+export interface OpenListingSearch {
+  /** A value produced by toTsQuery, or null to browse newest first. */
+  tsQuery: string | null;
+  categoryId: number | null;
+  mode: ListingMode | null;
+  cursor: ListingCursor | null;
+  limit: number;
+  now: Date;
+}
+
+/** One row of the browse/search result, before it becomes a DTO. */
+export interface OpenListingRow {
+  id: string;
+  title: string;
+  mode: ListingMode;
+  order_deadline: Date | null;
+  delivery_date: string | null;
+  published_at: Date;
+  category_id: number;
+  category_slug: string;
+  category_name: string;
+  seller_id: string;
+  seller_name: string;
+  seller_avatar_url: string | null;
+  image_key: string | null;
+  min_unit_price: number;
+  min_price_unit: string;
 }
 
 @Injectable()
@@ -89,5 +119,71 @@ export class ListingsRepository {
         );
       }
     });
+  }
+
+  /**
+   * Open listings for the browse page. Returns up to `limit` rows; ask for
+   * one more than a page to learn whether another page exists. The first
+   * image and the cheapest item come from lateral subqueries, so the list
+   * costs one query regardless of its length. Every value is a bound
+   * parameter.
+   */
+  searchOpen(search: OpenListingSearch): Promise<OpenListingRow[]> {
+    const params: unknown[] = [search.now];
+    const bind = (value: unknown): string => `$${params.push(value)}`;
+
+    const where = [
+      `l.status = 'open'`,
+      `(l.order_deadline IS NULL OR l.order_deadline > $1)`,
+    ];
+    if (search.categoryId !== null) {
+      where.push(`l.category_id = ${bind(search.categoryId)}`);
+    }
+    if (search.mode !== null) {
+      where.push(`l.mode = ${bind(search.mode)}::listings_mode_enum`);
+    }
+
+    const orderBy = ['l.published_at DESC', 'l.id DESC'];
+    let offset = '';
+    if (search.tsQuery !== null) {
+      const tsQuery = `to_tsquery('simple', ${bind(search.tsQuery)})`;
+      where.push(`l.search_vector @@ ${tsQuery}`);
+      orderBy.unshift(`ts_rank(l.search_vector, ${tsQuery}) DESC`);
+      if (search.cursor?.kind === 'ranked') {
+        offset = `OFFSET ${bind(search.cursor.offset)}`;
+      }
+    } else if (search.cursor?.kind === 'recent') {
+      where.push(
+        `(l.published_at, l.id) < (${bind(search.cursor.publishedAt)}::timestamptz, ${bind(search.cursor.id)}::uuid)`,
+      );
+    }
+
+    return this.repository.query(
+      `
+      SELECT
+        l.id, l.title, l.mode, l.order_deadline,
+        to_char(l.delivery_date, 'YYYY-MM-DD') AS delivery_date,
+        l.published_at,
+        c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
+        u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
+        image.storage_key AS image_key,
+        cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit
+      FROM listings l
+      JOIN categories c ON c.id = l.category_id
+      JOIN users u ON u.id = l.seller_id
+      LEFT JOIN LATERAL (
+        SELECT storage_key FROM listing_images
+        WHERE listing_id = l.id ORDER BY sort_order LIMIT 1
+      ) image ON true
+      JOIN LATERAL (
+        SELECT unit_price, unit FROM listing_items
+        WHERE listing_id = l.id ORDER BY unit_price, sort_order LIMIT 1
+      ) cheapest ON true
+      WHERE ${where.join(' AND ')}
+      ORDER BY ${orderBy.join(', ')}
+      LIMIT ${bind(search.limit)} ${offset}
+      `,
+      params,
+    );
   }
 }

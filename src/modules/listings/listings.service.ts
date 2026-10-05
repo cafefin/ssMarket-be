@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   BadRequestException,
   ForbiddenException,
@@ -8,6 +9,16 @@ import { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { UsersService } from '../users/users.service.js';
+import { ListingDetailDto } from './dto/listing-response.dto.js';
+import type {
+  ListingPageDto,
+  ListingSummaryDto,
+} from './dto/listing-summary.dto.js';
+import {
+  decodeCursor,
+  encodeCursor,
+  type ListingCursor,
+} from './listing-cursor.js';
 import {
   isListingOpen,
   type ListingInput,
@@ -16,14 +27,29 @@ import {
 import type { Listing } from './listing.entity.js';
 import {
   LISTINGS_CACHE_NAMESPACE,
+  LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
   ListingStatus,
 } from './listings.constants.js';
 import {
   type ListingItemFields,
   ListingsRepository,
+  type OpenListingRow,
 } from './listings.repository.js';
+import { mediaUrl, thumbnailKey } from './media-url.js';
+import { toTsQuery } from './search-query.js';
 import { buildSearchText } from './search-text.js';
+
+export interface ListingSearchParams {
+  q?: string;
+  category?: string;
+  mode?: ListingMode;
+  cursor?: string;
+  limit?: number;
+}
+
+const DEFAULT_PAGE_SIZE = 24;
+const MAX_PAGE_SIZE = 48;
 
 @Injectable()
 export class ListingsService {
@@ -131,8 +157,146 @@ export class ListingsService {
     return listing;
   }
 
+  /** Browse or search open listings. The result is cached for a minute. */
+  async search(params: ListingSearchParams): Promise<ListingPageDto> {
+    const limit = Math.min(
+      Math.max(params.limit ?? DEFAULT_PAGE_SIZE, 1),
+      MAX_PAGE_SIZE,
+    );
+    const tsQuery = params.q ? toTsQuery(params.q) : null;
+    const cursor = params.cursor ? decodeCursor(params.cursor) : null;
+    const expectedKind = tsQuery === null ? 'recent' : 'ranked';
+    if (cursor && cursor.kind !== expectedKind) {
+      throw new BadRequestException('Invalid cursor');
+    }
+
+    let categoryId: number | null = null;
+    if (params.category) {
+      const category = await this.categories.findBySlug(params.category);
+      if (!category) {
+        return { items: [], nextCursor: null };
+      }
+      categoryId = category.id;
+    }
+    const mode = params.mode ?? null;
+
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify([tsQuery, categoryId, mode, cursor, limit]))
+      .digest('hex');
+    const version = await this.cache.getVersion(LISTINGS_CACHE_NAMESPACE);
+
+    return this.cache.getOrSet(
+      `${LISTINGS_CACHE_NAMESPACE}:v${version}:list:${fingerprint}`,
+      LISTINGS_CACHE_TTL_SECONDS,
+      async () => {
+        const rows = await this.listings.searchOpen({
+          tsQuery,
+          categoryId,
+          mode,
+          cursor,
+          limit: limit + 1,
+          now: new Date(),
+        });
+        const page = rows.slice(0, limit);
+        return {
+          items: page.map((row) => this.toSummary(row)),
+          nextCursor:
+            rows.length > limit
+              ? encodeCursor(this.nextCursor(tsQuery, cursor, page))
+              : null,
+        };
+      },
+    );
+  }
+
+  /**
+   * The detail view for anyone signed in. Open listings come from the cache;
+   * anything else falls through to the seller-only path.
+   */
+  async getPublicDetail(
+    viewerId: string,
+    id: string,
+  ): Promise<ListingDetailDto> {
+    const version = await this.cache.getVersion(LISTINGS_CACHE_NAMESPACE);
+    let cached: ListingDetailDto | null = null;
+    try {
+      cached = await this.cache.getOrSet(
+        `${LISTINGS_CACHE_NAMESPACE}:v${version}:detail:${id}`,
+        LISTINGS_CACHE_TTL_SECONDS,
+        async () => {
+          const listing = await this.mustFind(id);
+          const now = new Date();
+          if (!isListingOpen(listing, now)) {
+            // Thrown so that non-public listings are never written to the cache.
+            throw new NotFoundException('Listing not found');
+          }
+          return ListingDetailDto.from(listing, now);
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        throw error;
+      }
+    }
+
+    // A cached pre-order may have passed its deadline since it was stored.
+    const now = new Date();
+    if (
+      cached &&
+      (cached.orderDeadline === null ||
+        new Date(cached.orderDeadline).getTime() > now.getTime())
+    ) {
+      return cached;
+    }
+
+    return ListingDetailDto.from(await this.getForViewer(viewerId, id), now);
+  }
+
   listMine(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.listings.findBySeller(sellerId, status);
+  }
+
+  private nextCursor(
+    tsQuery: string | null,
+    current: ListingCursor | null,
+    page: OpenListingRow[],
+  ): ListingCursor {
+    if (tsQuery !== null) {
+      const previous = current?.kind === 'ranked' ? current.offset : 0;
+      return { kind: 'ranked', offset: previous + page.length };
+    }
+    const last = page[page.length - 1];
+    return {
+      kind: 'recent',
+      publishedAt: last.published_at.toISOString(),
+      id: last.id,
+    };
+  }
+
+  private toSummary(row: OpenListingRow): ListingSummaryDto {
+    return {
+      id: row.id,
+      title: row.title,
+      mode: row.mode,
+      category: {
+        id: row.category_id,
+        slug: row.category_slug,
+        name: row.category_name,
+      },
+      seller: {
+        id: row.seller_id,
+        name: row.seller_name,
+        avatarUrl: row.seller_avatar_url,
+      },
+      thumbnailUrl: row.image_key
+        ? mediaUrl(thumbnailKey(row.image_key))
+        : null,
+      minUnitPrice: row.min_unit_price,
+      minPriceUnit: row.min_price_unit,
+      orderDeadline: row.order_deadline?.toISOString() ?? null,
+      deliveryDate: row.delivery_date,
+      publishedAt: row.published_at.toISOString(),
+    };
   }
 
   private async mustFind(id: string): Promise<Listing> {

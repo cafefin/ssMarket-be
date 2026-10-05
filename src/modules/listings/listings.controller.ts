@@ -25,7 +25,9 @@ import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard.js'
 import type { AuthUser } from '../auth/auth.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { ListingInputDto } from './dto/listing-input.dto.js';
+import { ListingQueryDto } from './dto/listing-query.dto.js';
 import { ListingDetailDto } from './dto/listing-response.dto.js';
+import { ListingPageDto } from './dto/listing-summary.dto.js';
 import { ListingStatus } from './listings.constants.js';
 import { ListingsService } from './listings.service.js';
 
@@ -50,14 +52,19 @@ export class ListingsController {
     return ListingDetailDto.from(listing, new Date());
   }
 
+  @Get()
+  @ApiOkResponse({ type: ListingPageDto })
+  search(@Query() query: ListingQueryDto): Promise<ListingPageDto> {
+    return this.listings.search(query);
+  }
+
   @Get(':id')
   @ApiOkResponse({ type: ListingDetailDto })
   async get(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<ListingDetailDto> {
-    const listing = await this.listings.getForViewer(user.id, id);
-    return ListingDetailDto.from(listing, new Date());
+    return this.listings.getPublicDetail(user.id, id);
   }
 
   @Patch(':id')
