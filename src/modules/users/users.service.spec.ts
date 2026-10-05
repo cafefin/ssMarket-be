@@ -1,5 +1,6 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Mocked } from 'vitest';
+import { BanksService } from '../banks/banks.service.js';
 import { User, UserRole } from './user.entity.js';
 import type { UsersRepository } from './users.repository.js';
 import { type GoogleProfile, UsersService } from './users.service.js';
@@ -12,6 +13,10 @@ function buildUser(overrides: Partial<User> = {}): User {
     avatarUrl: null,
     googleId: 'google-1',
     role: UserRole.User,
+    deliveryLocation: null,
+    bankBin: null,
+    bankAccountNumber: null,
+    bankAccountName: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -37,7 +42,10 @@ describe('UsersService', () => {
       findByGoogleId: vi.fn(),
       save: vi.fn((user: Partial<User>) => Promise.resolve(buildUser(user))),
     };
-    service = new UsersService(repository as unknown as UsersRepository);
+    service = new UsersService(
+      repository as unknown as UsersRepository,
+      new BanksService(),
+    );
   });
 
   describe('upsertFromGoogle', () => {
@@ -90,5 +98,113 @@ describe('UsersService', () => {
     repository.findById.mockResolvedValue(null);
 
     await expect(service.findById('missing')).resolves.toBeNull();
+  });
+
+  describe('updateProfile', () => {
+    const bank = {
+      bankBin: '970436',
+      bankAccountNumber: '0123456789',
+      bankAccountName: 'Nguyễn  Văn An',
+    };
+
+    it('throws NotFoundException for an unknown user', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      await expect(
+        service.updateProfile('missing', { deliveryLocation: 'Tầng 7' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('trims the delivery location and leaves bank fields unchanged', async () => {
+      repository.findById.mockResolvedValue(
+        buildUser({
+          bankBin: '970436',
+          bankAccountNumber: '1',
+          bankAccountName: 'A',
+        }),
+      );
+
+      const user = await service.updateProfile('user-1', {
+        deliveryLocation: '  Tầng 7  ',
+      });
+
+      expect(user.deliveryLocation).toBe('Tầng 7');
+      expect(user.bankBin).toBe('970436');
+    });
+
+    it('stores an empty delivery location as null', async () => {
+      repository.findById.mockResolvedValue(
+        buildUser({ deliveryLocation: 'Tầng 7' }),
+      );
+
+      const user = await service.updateProfile('user-1', {
+        deliveryLocation: '   ',
+      });
+
+      expect(user.deliveryLocation).toBeNull();
+    });
+
+    it('saves bank details with the account name in unaccented upper case', async () => {
+      repository.findById.mockResolvedValue(buildUser());
+
+      const user = await service.updateProfile('user-1', bank);
+
+      expect(user).toMatchObject({
+        bankBin: '970436',
+        bankAccountNumber: '0123456789',
+        bankAccountName: 'NGUYEN VAN AN',
+      });
+    });
+
+    it('clears bank details when all three are null', async () => {
+      repository.findById.mockResolvedValue(buildUser(bank));
+
+      const user = await service.updateProfile('user-1', {
+        bankBin: null,
+        bankAccountNumber: null,
+        bankAccountName: null,
+      });
+
+      expect(user).toMatchObject({
+        bankBin: null,
+        bankAccountNumber: null,
+        bankAccountName: null,
+      });
+    });
+
+    it.each([
+      ['only one bank field', { bankBin: '970436' }],
+      ['a mix of null and values', { ...bank, bankAccountName: null }],
+    ])('rejects %s', async (_label, input) => {
+      repository.findById.mockResolvedValue(buildUser());
+
+      await expect(
+        service.updateProfile('user-1', input),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a bank that is not in the directory', async () => {
+      repository.findById.mockResolvedValue(buildUser());
+
+      await expect(
+        service.updateProfile('user-1', { ...bank, bankBin: '000000' }),
+      ).rejects.toThrow('Unknown bank');
+    });
+  });
+
+  describe('hasBankProfile', () => {
+    it('is true only when all three bank fields are set', () => {
+      expect(service.hasBankProfile(buildUser())).toBe(false);
+      expect(
+        service.hasBankProfile(
+          buildUser({
+            bankBin: '970436',
+            bankAccountNumber: '0123456789',
+            bankAccountName: 'NGUYEN VAN AN',
+          }),
+        ),
+      ).toBe(true);
+    });
   });
 });

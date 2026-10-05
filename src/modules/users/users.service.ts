@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { stripDiacritics } from '../../common/text/normalize.js';
+import { BanksService } from '../banks/banks.service.js';
 import type { User } from './user.entity.js';
 import { UsersRepository } from './users.repository.js';
 
@@ -9,9 +15,20 @@ export interface GoogleProfile {
   avatarUrl: string | null;
 }
 
+/** Absent fields are left unchanged; null clears a field. */
+export interface UpdateProfileInput {
+  deliveryLocation?: string | null;
+  bankBin?: string | null;
+  bankAccountNumber?: string | null;
+  bankAccountName?: string | null;
+}
+
 @Injectable()
 export class UsersService {
-  constructor(private readonly users: UsersRepository) {}
+  constructor(
+    private readonly users: UsersRepository,
+    private readonly banks: BanksService,
+  ) {}
 
   async upsertFromGoogle(profile: GoogleProfile): Promise<User> {
     const existing = await this.users.findByGoogleId(profile.googleId);
@@ -36,5 +53,65 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     return user;
+  }
+
+  async updateProfile(
+    userId: string,
+    input: UpdateProfileInput,
+  ): Promise<User> {
+    const user = await this.getById(userId);
+
+    if (input.deliveryLocation !== undefined) {
+      user.deliveryLocation = input.deliveryLocation?.trim() || null;
+    }
+    this.applyBankDetails(user, input);
+
+    return this.users.save(user);
+  }
+
+  /** A seller needs this before a listing may accept QR payments. */
+  hasBankProfile(user: User): boolean {
+    return Boolean(
+      user.bankBin && user.bankAccountNumber && user.bankAccountName,
+    );
+  }
+
+  private applyBankDetails(user: User, input: UpdateProfileInput): void {
+    const fields = [
+      input.bankBin,
+      input.bankAccountNumber,
+      input.bankAccountName,
+    ];
+    if (fields.every((field) => field === undefined)) {
+      return;
+    }
+
+    const allNull = fields.every((field) => field === null);
+    const allSet = fields.every((field) => typeof field === 'string');
+    if (!allNull && !allSet) {
+      throw new BadRequestException(
+        'bankBin, bankAccountNumber and bankAccountName must be sent together',
+      );
+    }
+
+    if (allNull) {
+      user.bankBin = null;
+      user.bankAccountNumber = null;
+      user.bankAccountName = null;
+      return;
+    }
+
+    const [bankBin, bankAccountNumber, bankAccountName] = fields as string[];
+    if (!this.banks.exists(bankBin)) {
+      throw new BadRequestException('Unknown bank');
+    }
+
+    user.bankBin = bankBin;
+    user.bankAccountNumber = bankAccountNumber;
+    // Bank transfers carry the holder name in unaccented upper case.
+    user.bankAccountName = stripDiacritics(bankAccountName)
+      .toUpperCase()
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 }

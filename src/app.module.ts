@@ -9,6 +9,7 @@ import {
 import { DatabaseModule } from './database/database.module.js';
 import { ACCESS_TOKEN_TTL_SECONDS } from './modules/auth/auth.constants.js';
 import { AuthModule } from './modules/auth/auth.module.js';
+import { BanksModule } from './modules/banks/banks.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { RedisModule } from './redis/redis.module.js';
@@ -28,6 +29,7 @@ import { RedisModule } from './redis/redis.module.js';
     ThrottlerModule.forRoot({ throttlers: [{ ttl: 60_000, limit: 20 }] }),
     DatabaseModule,
     RedisModule,
+    BanksModule,
     UsersModule,
     AuthModule,
     HealthModule,

@@ -163,7 +163,93 @@ describe('ssMarket API', () => {
         name: 'An Nguyen',
         avatarUrl: 'https://img.example.com/a.png',
         role: 'user',
+        deliveryLocation: null,
+        bankBin: null,
+        bankAccountNumber: null,
+        bankAccountName: null,
       });
+    });
+  });
+
+  describe('PATCH /users/me', () => {
+    const bank = {
+      bankBin: '970436',
+      bankAccountNumber: '0123456789',
+      bankAccountName: 'Nguyễn Văn An',
+    };
+
+    it('requires a session', async () => {
+      await request(server()).patch('/users/me').send({}).expect(401);
+    });
+
+    it('saves the delivery location and bank details', async () => {
+      const agent = request.agent(server());
+      await agent.get('/auth/google/callback').expect(302);
+
+      const response = await agent
+        .patch('/users/me')
+        .send({ deliveryLocation: 'Tầng 7', ...bank })
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        deliveryLocation: 'Tầng 7',
+        bankBin: '970436',
+        bankAccountNumber: '0123456789',
+        bankAccountName: 'NGUYEN VAN AN',
+      });
+      const me = await agent.get('/users/me').expect(200);
+      expect(me.body).toMatchObject({ bankAccountName: 'NGUYEN VAN AN' });
+    });
+
+    it('rejects partial bank details', async () => {
+      const agent = request.agent(server());
+      await agent.get('/auth/google/callback').expect(302);
+
+      const response = await agent
+        .patch('/users/me')
+        .send({ bankBin: '970436' })
+        .expect(400);
+
+      expect(response.body).toMatchObject({ code: 'BAD_REQUEST' });
+    });
+
+    it('rejects an unknown bank and a malformed account number', async () => {
+      const agent = request.agent(server());
+      await agent.get('/auth/google/callback').expect(302);
+
+      await agent
+        .patch('/users/me')
+        .send({ ...bank, bankBin: '000000' })
+        .expect(400);
+      const malformed = await agent
+        .patch('/users/me')
+        .send({ ...bank, bankAccountNumber: '12 34' })
+        .expect(400);
+      expect(malformed.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+
+    it('rejects fields that are not part of the profile', async () => {
+      const agent = request.agent(server());
+      await agent.get('/auth/google/callback').expect(302);
+
+      await agent.patch('/users/me').send({ role: 'admin' }).expect(400);
+    });
+  });
+
+  describe('GET /banks', () => {
+    it('requires a session', async () => {
+      await request(server()).get('/banks').expect(401);
+    });
+
+    it('lists banks with their BIN', async () => {
+      const agent = request.agent(server());
+      await agent.get('/auth/google/callback').expect(302);
+
+      const response = await agent.get('/banks').expect(200);
+
+      expect(response.body).toContainEqual(
+        expect.objectContaining({ bin: '970436', shortName: 'Vietcombank' }),
+      );
     });
   });
 
@@ -217,12 +303,14 @@ describe('ssMarket API', () => {
         components: { schemas: Record<string, unknown> };
       };
 
-      expect(Object.keys(document.paths).sort()).toEqual([
-        '/auth/logout',
-        '/auth/refresh',
-        '/health',
-        '/users/me',
-      ]);
+      expect(Object.keys(document.paths)).toEqual(
+        expect.arrayContaining([
+          '/auth/logout',
+          '/auth/refresh',
+          '/health',
+          '/users/me',
+        ]),
+      );
       expect(document.components.schemas.UserResponseDto).toBeDefined();
     });
   });

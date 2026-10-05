@@ -17,6 +17,18 @@ export class UserResponseDto {
   @ApiProperty({ enum: UserRole, enumName: 'UserRole' })
   role!: UserRole;
 
+  @ApiProperty({ type: String, nullable: true })
+  deliveryLocation!: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  bankBin!: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  bankAccountNumber!: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  bankAccountName!: string | null;
+
   static from(user: User): UserResponseDto {
     const dto = new UserResponseDto();
     dto.id = user.id;
@@ -24,6 +36,10 @@ export class UserResponseDto {
     dto.name = user.name;
     dto.avatarUrl = user.avatarUrl;
     dto.role = user.role;
+    dto.deliveryLocation = user.deliveryLocation;
+    dto.bankBin = user.bankBin;
+    dto.bankAccountNumber = user.bankAccountNumber;
+    dto.bankAccountName = user.bankAccountName;
     return dto;
   }
 }

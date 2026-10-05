@@ -36,6 +36,33 @@ export class User {
   })
   role!: UserRole;
 
+  @Column({
+    name: 'delivery_location',
+    type: 'varchar',
+    length: 120,
+    nullable: true,
+  })
+  deliveryLocation!: string | null;
+
+  @Column({ name: 'bank_bin', type: 'varchar', length: 6, nullable: true })
+  bankBin!: string | null;
+
+  @Column({
+    name: 'bank_account_number',
+    type: 'varchar',
+    length: 24,
+    nullable: true,
+  })
+  bankAccountNumber!: string | null;
+
+  @Column({
+    name: 'bank_account_name',
+    type: 'varchar',
+    length: 120,
+    nullable: true,
+  })
+  bankAccountName!: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 
