@@ -1,0 +1,3 @@
+# @scarf/scarf is install-time telemetry pulled in by swagger-ui-dist; never run it.
+allowBuilds:
+  '@scarf/scarf': false
