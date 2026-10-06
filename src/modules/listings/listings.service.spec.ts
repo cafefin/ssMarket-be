@@ -86,7 +86,7 @@ describe('ListingsService', () => {
     repository.findByIdWithRelations.mockResolvedValue(stored());
     users.getById.mockResolvedValue({ id: SELLER });
     users.hasBankProfile.mockReturnValue(true);
-    categories.findById.mockResolvedValue({ id: 1 });
+    categories.findById.mockResolvedValue({ id: 1, isActive: true });
     service = new ListingsService(
       repository as unknown as ListingsRepository,
       users as unknown as UsersService,
@@ -149,6 +149,15 @@ describe('ListingsService', () => {
       );
     });
 
+    it('refuses a hidden category', async () => {
+      categories.findById.mockResolvedValue({ id: 1, isActive: false });
+
+      await expect(codeOf(service.create(SELLER, input()))).resolves.toBe(
+        'CATEGORY_INACTIVE',
+      );
+      expect(repository.insert).not.toHaveBeenCalled();
+    });
+
     it('requires a bank profile to accept QR payments', async () => {
       users.hasBankProfile.mockReturnValue(false);
 
@@ -195,6 +204,29 @@ describe('ListingsService', () => {
       await expect(
         service.update(OTHER, 'listing-1', input()),
       ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
+    it('lets a listing stay in a category that was hidden later', async () => {
+      categories.findById.mockResolvedValue({ id: 1, isActive: false });
+      repository.findByIdWithRelations.mockResolvedValue(
+        stored({ categoryId: 1 }),
+      );
+
+      await service.update(SELLER, 'listing-1', input({ categoryId: 1 }));
+
+      expect(repository.update).toHaveBeenCalled();
+    });
+
+    it('refuses to move a listing into a hidden category', async () => {
+      categories.findById.mockResolvedValue({ id: 5, isActive: false });
+      repository.findByIdWithRelations.mockResolvedValue(
+        stored({ categoryId: 1 }),
+      );
+
+      await expect(
+        codeOf(service.update(SELLER, 'listing-1', input({ categoryId: 5 }))),
+      ).resolves.toBe('CATEGORY_INACTIVE');
       expect(repository.update).not.toHaveBeenCalled();
     });
 

@@ -98,7 +98,7 @@ export class ListingsService {
     if (input.mode !== listing.mode) {
       throw new BadRequestException('The mode of a listing cannot be changed');
     }
-    await this.assertValid(sellerId, input);
+    await this.assertValid(sellerId, input, listing.categoryId);
     const own = new Set(listing.items.map((item) => item.id));
     if (input.items.some((item) => item.id && !own.has(item.id))) {
       throw new BadRequestException(
@@ -374,6 +374,7 @@ export class ListingsService {
         id: row.category_id,
         slug: row.category_slug,
         name: row.category_name,
+        nameEn: row.category_name_en,
       },
       seller: {
         id: row.seller_id,
@@ -411,13 +412,24 @@ export class ListingsService {
   private async assertValid(
     sellerId: string,
     input: ListingInput,
+    /** The listing's category before this edit; null when creating. */
+    currentCategoryId: number | null = null,
   ): Promise<void> {
     const problems = validateListingInput(input);
     if (problems.length > 0) {
       throw new BadRequestException(problems.join('; '));
     }
-    if (!(await this.categories.findById(input.categoryId))) {
+    const category = await this.categories.findById(input.categoryId);
+    if (!category) {
       throw new BadRequestException('Unknown category');
+    }
+    // A listing already in a hidden category may stay there when edited.
+    if (!category.isActive && category.id !== currentCategoryId) {
+      throw new DomainException(
+        400,
+        'CATEGORY_INACTIVE',
+        'This category no longer takes listings',
+      );
     }
     if (input.acceptsPrepaidQr) {
       await this.assertBankProfile(sellerId);

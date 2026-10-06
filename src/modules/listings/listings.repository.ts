@@ -57,6 +57,7 @@ export interface OpenListingRow {
   category_id: number;
   category_slug: string;
   category_name: string;
+  category_name_en: string;
   seller_id: string;
   seller_name: string;
   seller_avatar_url: string | null;
@@ -205,6 +206,7 @@ export class ListingsRepository {
         to_char(l.delivery_date, 'YYYY-MM-DD') AS delivery_date,
         l.published_at,
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
+        c.name_en AS category_name_en,
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
         cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,

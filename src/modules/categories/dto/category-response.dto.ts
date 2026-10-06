@@ -11,11 +11,15 @@ export class CategoryResponseDto {
   @ApiProperty({ example: 'Thực phẩm tươi' })
   name!: string;
 
+  @ApiProperty({ example: 'Fresh food' })
+  nameEn!: string;
+
   static from(category: Category): CategoryResponseDto {
     const dto = new CategoryResponseDto();
     dto.id = category.id;
     dto.slug = category.slug;
     dto.name = category.name;
+    dto.nameEn = category.nameEn;
     return dto;
   }
 }

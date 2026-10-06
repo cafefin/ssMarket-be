@@ -10,8 +10,27 @@ export class CategoriesRepository {
     private readonly repository: Repository<Category>,
   ) {}
 
+  findActive(): Promise<Category[]> {
+    return this.repository.find({
+      where: { isActive: true },
+      order: { sortOrder: 'ASC', id: 'ASC' },
+    });
+  }
+
   findAll(): Promise<Category[]> {
-    return this.repository.find({ order: { sortOrder: 'ASC' } });
+    return this.repository.find({ order: { sortOrder: 'ASC', id: 'ASC' } });
+  }
+
+  async maxSortOrder(): Promise<number> {
+    const row = await this.repository
+      .createQueryBuilder('c')
+      .select('COALESCE(MAX(c.sort_order), 0)', 'max')
+      .getRawOne<{ max: number }>();
+    return Number(row?.max ?? 0);
+  }
+
+  save(category: Partial<Category>): Promise<Category> {
+    return this.repository.save(this.repository.create(category));
   }
 
   findById(id: number): Promise<Category | null> {
