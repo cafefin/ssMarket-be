@@ -5,7 +5,11 @@ import type { Tx } from '../../database/transaction.js';
 import { ListingItem } from './listing-item.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
-import type { ListingMode, ListingStatus } from './listings.constants.js';
+import {
+  ListingSort,
+  type ListingMode,
+  type ListingStatus,
+} from './listings.constants.js';
 
 /** The scalar columns a service may write. */
 export interface ListingFields {
@@ -41,6 +45,8 @@ export interface OpenListingSearch {
   tsQuery: string | null;
   categoryId: number | null;
   mode: ListingMode | null;
+  sort: ListingSort;
+  sellerId: string | null;
   cursor: ListingCursor | null;
   limit: number;
   now: Date;
@@ -186,9 +192,22 @@ export class ListingsRepository {
       where.push(`l.mode = ${bind(search.mode)}::listings_mode_enum`);
     }
 
-    const orderBy = ['l.published_at DESC', 'l.id DESC'];
+    if (search.sellerId !== null) {
+      where.push(`l.seller_id = ${bind(search.sellerId)}::uuid`);
+    }
+
+    let orderBy = ['l.published_at DESC', 'l.id DESC'];
     let offset = '';
-    if (search.tsQuery !== null) {
+    if (search.sort === ListingSort.Deadline) {
+      // The open condition above already requires a future deadline.
+      where.push(`l.mode = 'preorder'`);
+      orderBy = ['l.order_deadline ASC', 'l.id ASC'];
+      if (search.cursor?.kind === 'deadline') {
+        where.push(
+          `(l.order_deadline, l.id) > (${bind(search.cursor.orderDeadline)}::timestamptz, ${bind(search.cursor.id)}::uuid)`,
+        );
+      }
+    } else if (search.tsQuery !== null) {
       const tsQuery = `to_tsquery('simple', ${bind(search.tsQuery)})`;
       where.push(`l.search_vector @@ ${tsQuery}`);
       orderBy.unshift(`ts_rank(l.search_vector, ${tsQuery}) DESC`);

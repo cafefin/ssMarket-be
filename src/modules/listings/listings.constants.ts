@@ -3,6 +3,13 @@ export enum ListingMode {
   Preorder = 'preorder',
 }
 
+export enum ListingSort {
+  /** Newest first; the default. */
+  Recent = 'recent',
+  /** Pre-orders that are still taking orders, closing soonest first. */
+  Deadline = 'deadline',
+}
+
 export enum ListingStatus {
   Draft = 'draft',
   Open = 'open',

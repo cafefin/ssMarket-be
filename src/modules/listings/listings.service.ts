@@ -32,6 +32,7 @@ import {
   LISTINGS_CACHE_NAMESPACE,
   LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
+  ListingSort,
   ListingStatus,
 } from './listings.constants.js';
 import {
@@ -49,6 +50,8 @@ export interface ListingSearchParams {
   q?: string;
   category?: string;
   mode?: ListingMode;
+  sort?: ListingSort;
+  seller?: string;
   cursor?: string;
   limit?: number;
 }
@@ -233,9 +236,24 @@ export class ListingsService {
       Math.max(params.limit ?? DEFAULT_PAGE_SIZE, 1),
       MAX_PAGE_SIZE,
     );
+    const sort = params.sort ?? ListingSort.Recent;
     const tsQuery = params.q ? toTsQuery(params.q) : null;
+    if (
+      sort === ListingSort.Deadline &&
+      (params.q !== undefined || params.mode === ListingMode.InStock)
+    ) {
+      throw new BadRequestException(
+        'sort=deadline lists pre-orders only and cannot be combined with q or mode=in_stock',
+      );
+    }
+
     const cursor = params.cursor ? decodeCursor(params.cursor) : null;
-    const expectedKind = tsQuery === null ? 'recent' : 'ranked';
+    const expectedKind: ListingCursor['kind'] =
+      sort === ListingSort.Deadline
+        ? 'deadline'
+        : tsQuery === null
+          ? 'recent'
+          : 'ranked';
     if (cursor && cursor.kind !== expectedKind) {
       throw new BadRequestException('Invalid cursor');
     }
@@ -249,9 +267,20 @@ export class ListingsService {
       categoryId = category.id;
     }
     const mode = params.mode ?? null;
+    const sellerId = params.seller ?? null;
 
     const fingerprint = createHash('sha256')
-      .update(JSON.stringify([tsQuery, categoryId, mode, cursor, limit]))
+      .update(
+        JSON.stringify([
+          tsQuery,
+          categoryId,
+          mode,
+          cursor,
+          limit,
+          sort,
+          sellerId,
+        ]),
+      )
       .digest('hex');
     const version = await this.cache.getVersion(LISTINGS_CACHE_NAMESPACE);
 
@@ -263,6 +292,8 @@ export class ListingsService {
           tsQuery,
           categoryId,
           mode,
+          sort,
+          sellerId,
           cursor,
           limit: limit + 1,
           now: new Date(),
@@ -272,7 +303,7 @@ export class ListingsService {
           items: page.map((row) => this.toSummary(row)),
           nextCursor:
             rows.length > limit
-              ? encodeCursor(this.nextCursor(tsQuery, cursor, page))
+              ? encodeCursor(this.nextCursor(sort, tsQuery, cursor, page))
               : null,
         };
       },
@@ -349,15 +380,24 @@ export class ListingsService {
   }
 
   private nextCursor(
+    sort: ListingSort,
     tsQuery: string | null,
     current: ListingCursor | null,
     page: OpenListingRow[],
   ): ListingCursor {
+    const last = page[page.length - 1];
+    if (sort === ListingSort.Deadline) {
+      return {
+        kind: 'deadline',
+        // Non-null: the deadline ordering only returns pre-orders.
+        orderDeadline: (last.order_deadline as Date).toISOString(),
+        id: last.id,
+      };
+    }
     if (tsQuery !== null) {
       const previous = current?.kind === 'ranked' ? current.offset : 0;
       return { kind: 'ranked', offset: previous + page.length };
     }
-    const last = page[page.length - 1];
     return {
       kind: 'recent',
       publishedAt: last.published_at.toISOString(),
