@@ -8,6 +8,7 @@ import {
   Param,
   ParseEnumPipe,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Res,
@@ -28,7 +29,11 @@ import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard.js'
 import type { AuthUser } from '../auth/auth.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { OrderDetailDto, OrderPageDto } from './dto/order-response.dto.js';
-import { CancelOrderDto, PlaceOrderDto } from './dto/place-order.dto.js';
+import {
+  CancelOrderDto,
+  EditOrderDto,
+  PlaceOrderDto,
+} from './dto/place-order.dto.js';
 import { FulfillmentStatus, PaymentStatus } from './orders.constants.js';
 import { OrdersService } from './orders.service.js';
 
@@ -86,6 +91,18 @@ export class OrdersController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<OrderDetailDto> {
     return this.orders.getForParticipant(user.id, id);
+  }
+
+  @Patch(':id')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiOkResponse({ type: OrderDetailDto })
+  edit(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: EditOrderDto,
+  ): Promise<OrderDetailDto> {
+    return this.orders.edit(user.id, id, body);
   }
 
   @Post(':id/report-payment')

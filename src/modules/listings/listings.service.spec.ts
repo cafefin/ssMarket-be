@@ -10,6 +10,7 @@ import type { UsersService } from '../users/users.service.js';
 import type { ListingInput } from './listing-rules.js';
 import { Listing } from './listing.entity.js';
 import { ListingMode, ListingStatus } from './listings.constants.js';
+import type { ListingImagesService } from './listing-images.service.js';
 import type { ListingsRepository } from './listings.repository.js';
 import { ListingsService } from './listings.service.js';
 
@@ -75,6 +76,7 @@ describe('ListingsService', () => {
   const users = { getById: vi.fn(), hasBankProfile: vi.fn() };
   const categories = { findById: vi.fn() };
   const cache = { bumpVersion: vi.fn() };
+  const images = { copyAll: vi.fn() };
   let service: ListingsService;
 
   beforeEach(() => {
@@ -90,6 +92,7 @@ describe('ListingsService', () => {
       users as unknown as UsersService,
       categories as unknown as CategoriesService,
       cache as unknown as CacheService,
+      images as unknown as ListingImagesService,
     );
   });
 

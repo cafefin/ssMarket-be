@@ -84,7 +84,8 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 (409), `LISTING_NOT_OPEN` (409), `ALREADY_ORDERED` (409),
 `INVALID_ORDER_STATE` (409), `REQUEST_IN_PROGRESS` (409), `OWN_LISTING` (422),
 `PAYMENT_METHOD_NOT_ACCEPTED` (422), `INVALID_QUANTITY` (422),
-`IDEMPOTENCY_KEY_REQUIRED` (400). Pass structured data the frontend needs
+`IDEMPOTENCY_KEY_REQUIRED` (400), `ORDER_NOT_EDITABLE` (409),
+`SUMMARY_TOO_LARGE` (422). Pass structured data the frontend needs
 (which items ran out, the id of an existing order) as the `details` argument.
 
 ## Listings
@@ -128,6 +129,25 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
   `listings.invalidateCache()`.
 - Editing a listing matches items by id. An item that people have ordered is
   never deleted, only set `is_active = false`.
+
+## Seller tools
+
+- `GET /listings/:id/summary` is the table that replaces the seller's
+  spreadsheet: one row per order, one column per item. Totals come from SQL
+  aggregates in `OrdersRepository.totalsForListing`, never from adding up rows
+  in code, and never include cancelled orders.
+- `summary.csv` is built by `buildSummaryCsv`. Buyers control some of that
+  text, so any cell starting with `=`, `+`, `-` or `@` gets a leading
+  apostrophe. Keep that when adding columns.
+- `POST /listings/:id/orders/bulk` runs each order through the normal
+  single-order method and reports per order; one failure never stops the rest.
+- `PATCH /orders/:id` lets a buyer edit a pre-order while it is unpaid,
+  pending and its listing is open. Lines the order already had keep their
+  snapshot price; added items use the current price.
+- `POST /listings/:id/reopen` copies a finished pre-order round into a new
+  draft (items, and image files as separate copies) with `reopened_from_id`
+  set. It never changes the source listing or its orders.
+- `orderCount` on a listing is a database-computed virtual column.
 
 ## Payments
 

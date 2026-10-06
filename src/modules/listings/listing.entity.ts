@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
   type Relation,
   UpdateDateColumn,
+  VirtualColumn,
 } from 'typeorm';
 import { Category } from '../categories/category.entity.js';
 import { User } from '../users/user.entity.js';
@@ -83,6 +84,14 @@ export class Listing {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt!: Date;
+
+  /** Orders on this listing that have not been cancelled. Read-only. */
+  @VirtualColumn({
+    type: 'int',
+    query: (alias) =>
+      `(SELECT COUNT(*)::int FROM "orders" WHERE "orders"."listing_id" = ${alias}."id" AND "orders"."fulfillment_status" <> 'cancelled')`,
+  })
+  orderCount!: number;
 
   @OneToMany(() => ListingItem, (item) => item.listing)
   items!: Relation<ListingItem[]>;

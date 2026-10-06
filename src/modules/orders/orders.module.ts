@@ -9,6 +9,8 @@ import { Order } from './order.entity.js';
 import { OrdersController, SalesController } from './orders.controller.js';
 import { OrdersRepository } from './orders.repository.js';
 import { OrdersService } from './orders.service.js';
+import { SalesSummaryService } from './sales-summary.service.js';
+import { SummaryController } from './summary.controller.js';
 
 @Module({
   imports: [
@@ -17,7 +19,12 @@ import { OrdersService } from './orders.service.js';
     UsersModule,
     BanksModule,
   ],
-  controllers: [OrdersController, SalesController],
-  providers: [OrdersRepository, OrdersService, IdempotencyService],
+  controllers: [OrdersController, SalesController, SummaryController],
+  providers: [
+    OrdersRepository,
+    OrdersService,
+    IdempotencyService,
+    SalesSummaryService,
+  ],
 })
 export class OrdersModule {}

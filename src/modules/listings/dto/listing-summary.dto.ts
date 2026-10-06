@@ -30,6 +30,9 @@ export class ListingSummaryDto {
   @ApiProperty({ description: 'Unit of the cheapest item', example: 'kg' })
   minPriceUnit!: string;
 
+  @ApiProperty({ description: 'Orders that have not been cancelled' })
+  orderCount!: number;
+
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   orderDeadline!: string | null;
 

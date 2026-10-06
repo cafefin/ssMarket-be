@@ -22,6 +22,8 @@ export interface ListingFields {
   searchText: string;
   publishedAt: Date | null;
   closedAt: Date | null;
+  /** The listing this one was reopened from, if any. */
+  reopenedFromId?: string | null;
 }
 
 export interface ListingItemFields {
@@ -61,6 +63,7 @@ export interface OpenListingRow {
   image_key: string | null;
   min_unit_price: number;
   min_price_unit: string;
+  order_count: number;
 }
 
 @Injectable()
@@ -204,7 +207,9 @@ export class ListingsRepository {
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
-        cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit
+        cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
+        (SELECT COUNT(*)::int FROM orders o
+          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count
       FROM listings l
       JOIN categories c ON c.id = l.category_id
       JOIN users u ON u.id = l.seller_id

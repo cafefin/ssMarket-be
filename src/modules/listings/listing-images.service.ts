@@ -82,6 +82,35 @@ export class ListingImagesService {
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
   }
 
+  /**
+   * Gives a listing its own copies of another listing's images. The files
+   * are duplicated, not shared, so removing an image from one listing can
+   * never break the other.
+   */
+  async copyAll(
+    source: ListingImage[],
+    targetListingId: string,
+  ): Promise<void> {
+    for (const image of source) {
+      const [full, thumbnail] = await Promise.all([
+        this.storage.get(image.storageKey),
+        this.storage.get(thumbnailKey(image.storageKey)),
+      ]);
+      if (!full || !thumbnail) {
+        // The file is gone; leave this image out rather than fail the copy.
+        continue;
+      }
+      const storageKey = `listings/${targetListingId}/${randomUUID()}.webp`;
+      await this.storage.put(storageKey, full.data);
+      await this.storage.put(thumbnailKey(storageKey), thumbnail.data);
+      await this.images.create({
+        listingId: targetListingId,
+        storageKey,
+        sortOrder: image.sortOrder,
+      });
+    }
+  }
+
   private async assertEditable(
     sellerId: string,
     listingId: string,
