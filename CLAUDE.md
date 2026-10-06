@@ -102,8 +102,8 @@ Pass structured data the frontend needs
 - Money is integer VND. Quantities are `numeric(10,3)` and arrive from
   PostgreSQL as strings.
 - Other people get 404, not 403, for a listing they may not see.
-- A summary carries `stockQuantity` only for an in-stock listing with exactly
-  one active item; otherwise it is absent.
+- A summary's `stockQuantity` is set only for an in-stock listing with exactly
+  one active item; otherwise it is `null`.
 - `GET /listings?sort=deadline` lists pre-orders only, closing soonest first,
   with its own cursor kind. It answers 400 together with `q` or
   `mode=in_stock`.
@@ -116,7 +116,8 @@ Pass structured data the frontend needs
   changes.
 - A hidden category (`is_active = false`) is left out of `GET /categories`
   and refuses new listings with `CATEGORY_INACTIVE`; listings already in it
-  stay visible and editable.
+  stay visible and editable. Publishing also refuses a hidden category, which
+  covers drafts written earlier and reopened rounds.
 - Responses carry both `name` and `nameEn`; the frontend picks one. The API
   never reads `Accept-Language`, so caches are not split by language.
 - Every category write bumps the listings cache version.
@@ -244,8 +245,8 @@ seller in two browser windows. Through the frontend it is
 - Coverage must stay at or above 80% for lines, branches, functions and statements. Add tests rather than exclusions.
 - Integration tests truncate `users` between tests, which does not reset
   `categories`. A test that changes categories restores them in `beforeEach`:
-  `DELETE FROM categories WHERE id > 6` and
-  `UPDATE categories SET is_active = true`.
+  `DELETE FROM categories WHERE id > 6`, then the six seeded names and
+  `is_active = true`.
 
 ## Environment
 
