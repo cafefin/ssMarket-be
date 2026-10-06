@@ -210,5 +210,5 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 
 - TypeScript strict; no `any` without a comment explaining why.
 - Conventional Commits (`feat:`, `fix:`, `chore:`, `test:`, `docs:`).
-- Work on `feat/...`, `fix/...` or `chore/...` branches; `main` must stay green.
+- Work on `feat/...`, `fix/...` or `chore/...` branches; `production` must stay green.
 - Code, comments and commits in English.
