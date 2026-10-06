@@ -5,9 +5,10 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
 } from 'class-validator';
-import { ListingMode } from '../listings.constants.js';
+import { ListingMode, ListingSort } from '../listings.constants.js';
 
 export class ListingQueryDto {
   @ApiPropertyOptional({ description: 'Keywords, with or without diacritics' })
@@ -26,6 +27,23 @@ export class ListingQueryDto {
   @IsOptional()
   @IsEnum(ListingMode)
   mode?: ListingMode;
+
+  @ApiPropertyOptional({
+    enum: ListingSort,
+    enumName: 'ListingSort',
+    default: ListingSort.Recent,
+    description:
+      '`deadline` returns only pre-orders, closing soonest first; it cannot ' +
+      'be combined with `q` or `mode=in_stock`',
+  })
+  @IsOptional()
+  @IsEnum(ListingSort)
+  sort?: ListingSort;
+
+  @ApiPropertyOptional({ format: 'uuid', description: 'Only this seller' })
+  @IsOptional()
+  @IsUUID()
+  seller?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

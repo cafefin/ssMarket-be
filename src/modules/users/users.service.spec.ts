@@ -1,7 +1,9 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import type { Mocked } from 'vitest';
+import type { EnvironmentVariables } from '../../config/env.validation.js';
 import { BanksService } from '../banks/banks.service.js';
-import { User, UserRole } from './user.entity.js';
+import { User, UserLocale, UserRole } from './user.entity.js';
 import type { UsersRepository } from './users.repository.js';
 import { type GoogleProfile, UsersService } from './users.service.js';
 
@@ -13,6 +15,7 @@ function buildUser(overrides: Partial<User> = {}): User {
     avatarUrl: null,
     googleId: 'google-1',
     role: UserRole.User,
+    locale: UserLocale.Vi,
     deliveryLocation: null,
     bankBin: null,
     bankAccountNumber: null,
@@ -36,16 +39,50 @@ describe('UsersService', () => {
   >;
   let service: UsersService;
 
+  const buildService = (adminEmails: string) =>
+    new UsersService(
+      repository as unknown as UsersRepository,
+      new BanksService(),
+      { get: () => adminEmails } as unknown as ConfigService<
+        EnvironmentVariables,
+        true
+      >,
+    );
+
   beforeEach(() => {
     repository = {
       findById: vi.fn(),
       findByGoogleId: vi.fn(),
       save: vi.fn((user: Partial<User>) => Promise.resolve(buildUser(user))),
     };
-    service = new UsersService(
-      repository as unknown as UsersRepository,
-      new BanksService(),
-    );
+    service = buildService('');
+  });
+
+  describe('syncRole', () => {
+    it('takes the role away from a no-longer-listed admin and saves', async () => {
+      const user = buildUser({ role: UserRole.Admin });
+
+      const synced = await service.syncRole(user);
+
+      expect(synced.role).toBe(UserRole.User);
+      expect(repository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('promotes a newly listed user', async () => {
+      service = buildService('an@example.com');
+
+      const synced = await service.syncRole(buildUser());
+
+      expect(synced.role).toBe(UserRole.Admin);
+      expect(repository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not save when the role is unchanged', async () => {
+      const user = buildUser();
+
+      await expect(service.syncRole(user)).resolves.toBe(user);
+      expect(repository.save).not.toHaveBeenCalled();
+    });
   });
 
   describe('upsertFromGoogle', () => {
@@ -59,8 +96,32 @@ describe('UsersService', () => {
         email: 'an@example.com',
         name: 'An Nguyen',
         avatarUrl: 'https://img.example.com/a.png',
+        role: UserRole.User,
       });
       expect(user.email).toBe('an@example.com');
+    });
+
+    it('makes a listed email an admin, whatever its case', async () => {
+      repository.findByGoogleId.mockResolvedValue(null);
+      service = buildService('AN@example.com');
+
+      await service.upsertFromGoogle(profile);
+
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ role: UserRole.Admin }),
+      );
+    });
+
+    it('takes the role away from someone no longer listed', async () => {
+      repository.findByGoogleId.mockResolvedValue(
+        buildUser({ role: UserRole.Admin }),
+      );
+
+      await service.upsertFromGoogle(profile);
+
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1', role: UserRole.User }),
+      );
     });
 
     it('updates name and avatar on the existing user and keeps its id', async () => {
@@ -101,6 +162,23 @@ describe('UsersService', () => {
   });
 
   describe('updateProfile', () => {
+    it('changes the language and leaves it alone when absent', async () => {
+      repository.findById.mockResolvedValue(buildUser());
+
+      expect(
+        (await service.updateProfile('user-1', { locale: UserLocale.En }))
+          .locale,
+      ).toBe('en');
+
+      repository.findById.mockResolvedValue(
+        buildUser({ locale: UserLocale.En }),
+      );
+      expect(
+        (await service.updateProfile('user-1', { deliveryLocation: 'Tầng 3' }))
+          .locale,
+      ).toBe('en');
+    });
+
     const bank = {
       bankBin: '970436',
       bankAccountNumber: '0123456789',

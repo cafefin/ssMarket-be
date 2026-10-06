@@ -32,6 +32,7 @@ import {
   LISTINGS_CACHE_NAMESPACE,
   LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
+  ListingSort,
   ListingStatus,
 } from './listings.constants.js';
 import {
@@ -49,6 +50,8 @@ export interface ListingSearchParams {
   q?: string;
   category?: string;
   mode?: ListingMode;
+  sort?: ListingSort;
+  seller?: string;
   cursor?: string;
   limit?: number;
 }
@@ -98,7 +101,7 @@ export class ListingsService {
     if (input.mode !== listing.mode) {
       throw new BadRequestException('The mode of a listing cannot be changed');
     }
-    await this.assertValid(sellerId, input);
+    await this.assertValid(sellerId, input, listing.categoryId);
     const own = new Set(listing.items.map((item) => item.id));
     if (input.items.some((item) => item.id && !own.has(item.id))) {
       throw new BadRequestException(
@@ -133,6 +136,8 @@ export class ListingsService {
     if (listing.acceptsPrepaidQr) {
       await this.assertBankProfile(sellerId);
     }
+    // The category may have been hidden after this draft was written.
+    await this.assertCategoryOpen(listing.categoryId);
 
     await this.listings.update(id, {
       status: ListingStatus.Open,
@@ -233,9 +238,24 @@ export class ListingsService {
       Math.max(params.limit ?? DEFAULT_PAGE_SIZE, 1),
       MAX_PAGE_SIZE,
     );
+    const sort = params.sort ?? ListingSort.Recent;
     const tsQuery = params.q ? toTsQuery(params.q) : null;
+    if (
+      sort === ListingSort.Deadline &&
+      (params.q !== undefined || params.mode === ListingMode.InStock)
+    ) {
+      throw new BadRequestException(
+        'sort=deadline lists pre-orders only and cannot be combined with q or mode=in_stock',
+      );
+    }
+
     const cursor = params.cursor ? decodeCursor(params.cursor) : null;
-    const expectedKind = tsQuery === null ? 'recent' : 'ranked';
+    const expectedKind: ListingCursor['kind'] =
+      sort === ListingSort.Deadline
+        ? 'deadline'
+        : tsQuery === null
+          ? 'recent'
+          : 'ranked';
     if (cursor && cursor.kind !== expectedKind) {
       throw new BadRequestException('Invalid cursor');
     }
@@ -249,9 +269,20 @@ export class ListingsService {
       categoryId = category.id;
     }
     const mode = params.mode ?? null;
+    const sellerId = params.seller ?? null;
 
     const fingerprint = createHash('sha256')
-      .update(JSON.stringify([tsQuery, categoryId, mode, cursor, limit]))
+      .update(
+        JSON.stringify([
+          tsQuery,
+          categoryId,
+          mode,
+          cursor,
+          limit,
+          sort,
+          sellerId,
+        ]),
+      )
       .digest('hex');
     const version = await this.cache.getVersion(LISTINGS_CACHE_NAMESPACE);
 
@@ -263,6 +294,8 @@ export class ListingsService {
           tsQuery,
           categoryId,
           mode,
+          sort,
+          sellerId,
           cursor,
           limit: limit + 1,
           now: new Date(),
@@ -272,7 +305,7 @@ export class ListingsService {
           items: page.map((row) => this.toSummary(row)),
           nextCursor:
             rows.length > limit
-              ? encodeCursor(this.nextCursor(tsQuery, cursor, page))
+              ? encodeCursor(this.nextCursor(sort, tsQuery, cursor, page))
               : null,
         };
       },
@@ -349,15 +382,24 @@ export class ListingsService {
   }
 
   private nextCursor(
+    sort: ListingSort,
     tsQuery: string | null,
     current: ListingCursor | null,
     page: OpenListingRow[],
   ): ListingCursor {
+    const last = page[page.length - 1];
+    if (sort === ListingSort.Deadline) {
+      return {
+        kind: 'deadline',
+        // Non-null: the deadline ordering only returns pre-orders.
+        orderDeadline: (last.order_deadline as Date).toISOString(),
+        id: last.id,
+      };
+    }
     if (tsQuery !== null) {
       const previous = current?.kind === 'ranked' ? current.offset : 0;
       return { kind: 'ranked', offset: previous + page.length };
     }
-    const last = page[page.length - 1];
     return {
       kind: 'recent',
       publishedAt: last.published_at.toISOString(),
@@ -374,6 +416,7 @@ export class ListingsService {
         id: row.category_id,
         slug: row.category_slug,
         name: row.category_name,
+        nameEn: row.category_name_en,
       },
       seller: {
         id: row.seller_id,
@@ -384,6 +427,8 @@ export class ListingsService {
         ? mediaUrl(thumbnailKey(row.image_key))
         : null,
       orderCount: row.order_count,
+      stockQuantity:
+        row.stock_quantity === null ? null : Number(row.stock_quantity),
       minUnitPrice: row.min_unit_price,
       minPriceUnit: row.min_price_unit,
       orderDeadline: row.order_deadline?.toISOString() ?? null,
@@ -411,17 +456,39 @@ export class ListingsService {
   private async assertValid(
     sellerId: string,
     input: ListingInput,
+    /** The listing's category before this edit; null when creating. */
+    currentCategoryId: number | null = null,
   ): Promise<void> {
     const problems = validateListingInput(input);
     if (problems.length > 0) {
       throw new BadRequestException(problems.join('; '));
     }
-    if (!(await this.categories.findById(input.categoryId))) {
+    const category = await this.categories.findById(input.categoryId);
+    if (!category) {
       throw new BadRequestException('Unknown category');
+    }
+    // A listing already in a hidden category may stay there when edited.
+    if (!category.isActive && category.id !== currentCategoryId) {
+      throw this.categoryInactive();
     }
     if (input.acceptsPrepaidQr) {
       await this.assertBankProfile(sellerId);
     }
+  }
+
+  private async assertCategoryOpen(categoryId: number): Promise<void> {
+    const category = await this.categories.findById(categoryId);
+    if (!category?.isActive) {
+      throw this.categoryInactive();
+    }
+  }
+
+  private categoryInactive(): DomainException {
+    return new DomainException(
+      400,
+      'CATEGORY_INACTIVE',
+      'This category no longer takes listings',
+    );
   }
 
   private async assertBankProfile(sellerId: string): Promise<void> {

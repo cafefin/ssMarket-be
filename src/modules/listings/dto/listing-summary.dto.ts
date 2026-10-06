@@ -33,6 +33,15 @@ export class ListingSummaryDto {
   @ApiProperty({ description: 'Orders that have not been cancelled' })
   orderCount!: number;
 
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description:
+      'Remaining stock, only for an in-stock listing with exactly one item ' +
+      'that has a stock limit; null otherwise',
+  })
+  stockQuantity!: number | null;
+
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   orderDeadline!: string | null;
 

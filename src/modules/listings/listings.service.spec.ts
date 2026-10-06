@@ -9,7 +9,12 @@ import type { CategoriesService } from '../categories/categories.service.js';
 import type { UsersService } from '../users/users.service.js';
 import type { ListingInput } from './listing-rules.js';
 import { Listing } from './listing.entity.js';
-import { ListingMode, ListingStatus } from './listings.constants.js';
+import {
+  ListingMode,
+  ListingSort,
+  ListingStatus,
+} from './listings.constants.js';
+import { decodeCursor, encodeCursor } from './listing-cursor.js';
 import type { ListingImagesService } from './listing-images.service.js';
 import type { ListingsRepository } from './listings.repository.js';
 import { ListingsService } from './listings.service.js';
@@ -86,7 +91,7 @@ describe('ListingsService', () => {
     repository.findByIdWithRelations.mockResolvedValue(stored());
     users.getById.mockResolvedValue({ id: SELLER });
     users.hasBankProfile.mockReturnValue(true);
-    categories.findById.mockResolvedValue({ id: 1 });
+    categories.findById.mockResolvedValue({ id: 1, isActive: true });
     service = new ListingsService(
       repository as unknown as ListingsRepository,
       users as unknown as UsersService,
@@ -149,6 +154,15 @@ describe('ListingsService', () => {
       );
     });
 
+    it('refuses a hidden category', async () => {
+      categories.findById.mockResolvedValue({ id: 1, isActive: false });
+
+      await expect(codeOf(service.create(SELLER, input()))).resolves.toBe(
+        'CATEGORY_INACTIVE',
+      );
+      expect(repository.insert).not.toHaveBeenCalled();
+    });
+
     it('requires a bank profile to accept QR payments', async () => {
       users.hasBankProfile.mockReturnValue(false);
 
@@ -195,6 +209,29 @@ describe('ListingsService', () => {
       await expect(
         service.update(OTHER, 'listing-1', input()),
       ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
+    it('lets a listing stay in a category that was hidden later', async () => {
+      categories.findById.mockResolvedValue({ id: 1, isActive: false });
+      repository.findByIdWithRelations.mockResolvedValue(
+        stored({ categoryId: 1 }),
+      );
+
+      await service.update(SELLER, 'listing-1', input({ categoryId: 1 }));
+
+      expect(repository.update).toHaveBeenCalled();
+    });
+
+    it('refuses to move a listing into a hidden category', async () => {
+      categories.findById.mockResolvedValue({ id: 5, isActive: false });
+      repository.findByIdWithRelations.mockResolvedValue(
+        stored({ categoryId: 1 }),
+      );
+
+      await expect(
+        codeOf(service.update(SELLER, 'listing-1', input({ categoryId: 5 }))),
+      ).resolves.toBe('CATEGORY_INACTIVE');
       expect(repository.update).not.toHaveBeenCalled();
     });
 
@@ -307,6 +344,15 @@ describe('ListingsService', () => {
       );
     });
 
+    it('refuses a draft whose category has been hidden', async () => {
+      categories.findById.mockResolvedValue({ id: 1, isActive: false });
+
+      await expect(codeOf(service.publish(SELLER, 'listing-1'))).resolves.toBe(
+        'CATEGORY_INACTIVE',
+      );
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
     it("is 403 for someone else's listing", async () => {
       await expect(service.publish(OTHER, 'listing-1')).rejects.toBeInstanceOf(
         ForbiddenException,
@@ -382,5 +428,133 @@ describe('ListingsService', () => {
       SELLER,
       ListingStatus.Draft,
     );
+  });
+
+  describe('search ordering and filters', () => {
+    const cacheStore = {
+      getVersion: vi.fn(),
+      getOrSet: vi.fn(),
+    };
+    const search = { searchOpen: vi.fn() };
+    let searching: ListingsService;
+
+    const row = (id: string, deadline: Date | null) => ({
+      id,
+      title: 'Cam sành',
+      mode: deadline ? ListingMode.Preorder : ListingMode.InStock,
+      order_deadline: deadline,
+      delivery_date: null,
+      published_at: new Date('2026-10-05T03:00:00Z'),
+      category_id: 1,
+      category_slug: 'do-cu',
+      category_name: 'Đồ cũ',
+      category_name_en: 'Second-hand',
+      seller_id: SELLER,
+      seller_name: 'Seller',
+      seller_avatar_url: null,
+      image_key: null,
+      min_unit_price: 100000,
+      min_price_unit: 'cái',
+      order_count: 0,
+      stock_quantity: null,
+    });
+
+    beforeEach(() => {
+      cacheStore.getVersion.mockResolvedValue(1);
+      cacheStore.getOrSet.mockImplementation(
+        (_key: string, _ttl: number, load: () => Promise<unknown>) => load(),
+      );
+      searching = new ListingsService(
+        search as unknown as ListingsRepository,
+        users as unknown as UsersService,
+        categories as unknown as CategoriesService,
+        cacheStore as unknown as CacheService,
+        images as unknown as ListingImagesService,
+      );
+    });
+
+    it.each([
+      ['24.000', 24],
+      ['0.000', 0],
+      [null, null],
+    ])('maps stock_quantity %j to %j', async (stock, expected) => {
+      search.searchOpen.mockResolvedValue([
+        { ...row('listing-1', null), stock_quantity: stock },
+      ]);
+
+      const page = await searching.search({});
+
+      expect(page.items[0].stockQuantity).toBe(expected);
+    });
+
+    it('passes the default sort and no seller to the repository', async () => {
+      search.searchOpen.mockResolvedValue([]);
+
+      await searching.search({});
+
+      expect(search.searchOpen).toHaveBeenCalledWith(
+        expect.objectContaining({ sort: ListingSort.Recent, sellerId: null }),
+      );
+    });
+
+    it('passes the seller and deadline sort through', async () => {
+      search.searchOpen.mockResolvedValue([]);
+
+      await searching.search({ sort: ListingSort.Deadline, seller: SELLER });
+
+      expect(search.searchOpen).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sort: ListingSort.Deadline,
+          sellerId: SELLER,
+        }),
+      );
+    });
+
+    it('rejects sort=deadline combined with a keyword', async () => {
+      await expect(
+        searching.search({ sort: ListingSort.Deadline, q: 'cam' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(search.searchOpen).not.toHaveBeenCalled();
+    });
+
+    it('rejects sort=deadline combined with mode=in_stock', async () => {
+      await expect(
+        searching.search({
+          sort: ListingSort.Deadline,
+          mode: ListingMode.InStock,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a recent cursor on a deadline listing', async () => {
+      const cursor = encodeCursor({
+        kind: 'recent',
+        publishedAt: '2026-10-05T03:00:00.000Z',
+        id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
+      });
+
+      await expect(
+        searching.search({ sort: ListingSort.Deadline, cursor }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('ends a deadline page with a deadline cursor', async () => {
+      const deadline = new Date('2026-10-09T10:00:00.000Z');
+      search.searchOpen.mockResolvedValue([
+        row('0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', deadline),
+        row('1b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', deadline),
+      ]);
+
+      const page = await searching.search({
+        sort: ListingSort.Deadline,
+        limit: 1,
+      });
+
+      expect(decodeCursor(page.nextCursor as string)).toEqual({
+        kind: 'deadline',
+        orderDeadline: '2026-10-09T10:00:00.000Z',
+        id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
+      });
+    });
   });
 });

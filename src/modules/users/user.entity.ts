@@ -11,6 +11,12 @@ export enum UserRole {
   Admin = 'admin',
 }
 
+/** The language of the interface and of files generated for this person. */
+export enum UserLocale {
+  Vi = 'vi',
+  En = 'en',
+}
+
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')
@@ -35,6 +41,9 @@ export class User {
     default: UserRole.User,
   })
   role!: UserRole;
+
+  @Column({ type: 'varchar', length: 2, default: UserLocale.Vi })
+  locale!: UserLocale;
 
   @Column({
     name: 'delivery_location',

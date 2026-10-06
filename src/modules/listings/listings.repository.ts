@@ -5,7 +5,11 @@ import type { Tx } from '../../database/transaction.js';
 import { ListingItem } from './listing-item.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
-import type { ListingMode, ListingStatus } from './listings.constants.js';
+import {
+  ListingSort,
+  type ListingMode,
+  type ListingStatus,
+} from './listings.constants.js';
 
 /** The scalar columns a service may write. */
 export interface ListingFields {
@@ -41,6 +45,8 @@ export interface OpenListingSearch {
   tsQuery: string | null;
   categoryId: number | null;
   mode: ListingMode | null;
+  sort: ListingSort;
+  sellerId: string | null;
   cursor: ListingCursor | null;
   limit: number;
   now: Date;
@@ -57,6 +63,7 @@ export interface OpenListingRow {
   category_id: number;
   category_slug: string;
   category_name: string;
+  category_name_en: string;
   seller_id: string;
   seller_name: string;
   seller_avatar_url: string | null;
@@ -64,6 +71,8 @@ export interface OpenListingRow {
   min_unit_price: number;
   min_price_unit: string;
   order_count: number;
+  /** Set only for an in-stock listing with exactly one, limited, item. */
+  stock_quantity: string | null;
 }
 
 @Injectable()
@@ -183,9 +192,25 @@ export class ListingsRepository {
       where.push(`l.mode = ${bind(search.mode)}::listings_mode_enum`);
     }
 
-    const orderBy = ['l.published_at DESC', 'l.id DESC'];
+    if (search.sellerId !== null) {
+      where.push(`l.seller_id = ${bind(search.sellerId)}::uuid`);
+    }
+
+    let orderBy = ['l.published_at DESC', 'l.id DESC'];
     let offset = '';
-    if (search.tsQuery !== null) {
+    if (search.sort === ListingSort.Deadline) {
+      // The open condition above already requires a future deadline for
+      // these rows; the predicate is repeated so the planner can use the
+      // partial index IDX_listings_open_deadline.
+      where.push('l.order_deadline > $1');
+      where.push(`l.mode = 'preorder'`);
+      orderBy = ['l.order_deadline ASC', 'l.id ASC'];
+      if (search.cursor?.kind === 'deadline') {
+        where.push(
+          `(l.order_deadline, l.id) > (${bind(search.cursor.orderDeadline)}::timestamptz, ${bind(search.cursor.id)}::uuid)`,
+        );
+      }
+    } else if (search.tsQuery !== null) {
       const tsQuery = `to_tsquery('simple', ${bind(search.tsQuery)})`;
       where.push(`l.search_vector @@ ${tsQuery}`);
       orderBy.unshift(`ts_rank(l.search_vector, ${tsQuery}) DESC`);
@@ -205,11 +230,14 @@ export class ListingsRepository {
         to_char(l.delivery_date, 'YYYY-MM-DD') AS delivery_date,
         l.published_at,
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
+        c.name_en AS category_name_en,
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
         cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
         (SELECT COUNT(*)::int FROM orders o
-          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count
+          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
+        CASE WHEN l.mode = 'in_stock' AND stock.item_count = 1
+             THEN stock.only_stock END AS stock_quantity
       FROM listings l
       JOIN categories c ON c.id = l.category_id
       JOIN users u ON u.id = l.seller_id
@@ -221,6 +249,10 @@ export class ListingsRepository {
         SELECT unit_price, unit FROM listing_items
         WHERE listing_id = l.id AND is_active ORDER BY unit_price, sort_order LIMIT 1
       ) cheapest ON true
+      JOIN LATERAL (
+        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock
+        FROM listing_items WHERE listing_id = l.id AND is_active
+      ) stock ON true
       WHERE ${where.join(' AND ')}
       ORDER BY ${orderBy.join(', ')}
       LIMIT ${bind(search.limit)} ${offset}

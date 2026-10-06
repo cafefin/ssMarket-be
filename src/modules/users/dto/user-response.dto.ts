@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { type User, UserRole } from '../user.entity.js';
+import { type User, UserLocale, UserRole } from '../user.entity.js';
 
 export class UserResponseDto {
   @ApiProperty({ format: 'uuid' })
@@ -16,6 +16,9 @@ export class UserResponseDto {
 
   @ApiProperty({ enum: UserRole, enumName: 'UserRole' })
   role!: UserRole;
+
+  @ApiProperty({ enum: UserLocale, enumName: 'UserLocale' })
+  locale!: UserLocale;
 
   @ApiProperty({ type: String, nullable: true })
   deliveryLocation!: string | null;
@@ -36,6 +39,7 @@ export class UserResponseDto {
     dto.name = user.name;
     dto.avatarUrl = user.avatarUrl;
     dto.role = user.role;
+    dto.locale = user.locale;
     dto.deliveryLocation = user.deliveryLocation;
     dto.bankBin = user.bankBin;
     dto.bankAccountNumber = user.bankAccountNumber;

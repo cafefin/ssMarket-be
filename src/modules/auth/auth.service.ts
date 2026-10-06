@@ -72,7 +72,8 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    return this.issueTokens(user);
+    // A role taken away in ADMIN_EMAILS must not outlive the next refresh.
+    return this.issueTokens(await this.users.syncRole(user));
   }
 
   async logout(refreshToken: string | undefined): Promise<void> {

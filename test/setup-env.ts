@@ -17,3 +17,4 @@ process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 process.env.ALLOWED_EMAIL_DOMAIN = 'example.com';
 process.env.JWT_ACCESS_SECRET = 'test-secret-test-secret-test-secret-1234';
 process.env.UPLOAD_DIR = join(tmpdir(), 'ssmarket-test-uploads');
+process.env.ADMIN_EMAILS = 'admin@example.com';

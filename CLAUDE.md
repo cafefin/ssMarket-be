@@ -28,9 +28,9 @@ src/
 ├── redis/       Redis client provider and health check
 └── modules/
     ├── auth/        Google sign-in, tokens, guards
-    ├── users/       accounts and seller profile (delivery location, bank)
+    ├── users/       accounts, roles, language and seller profile
     ├── banks/       static directory of banks that accept VietQR
-    ├── categories/  reference data, seeded by migration
+    ├── categories/  categories, managed by admins
     ├── listings/    listings, items, images, search, stock
     ├── orders/      orders, state rules, idempotency
     ├── payments/    VietQR payload builder
@@ -85,7 +85,8 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 `INVALID_ORDER_STATE` (409), `REQUEST_IN_PROGRESS` (409), `OWN_LISTING` (422),
 `PAYMENT_METHOD_NOT_ACCEPTED` (422), `INVALID_QUANTITY` (422),
 `IDEMPOTENCY_KEY_REQUIRED` (400), `ORDER_NOT_EDITABLE` (409),
-`SUMMARY_TOO_LARGE` (422). Pass structured data the frontend needs
+`SUMMARY_TOO_LARGE` (422), `CATEGORY_EXISTS` (409), `CATEGORY_INACTIVE` (400).
+Pass structured data the frontend needs
 (which items ran out, the id of an existing order) as the `details` argument.
 
 ## Listings
@@ -101,6 +102,25 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 - Money is integer VND. Quantities are `numeric(10,3)` and arrive from
   PostgreSQL as strings.
 - Other people get 404, not 403, for a listing they may not see.
+- A summary's `stockQuantity` is set only for an in-stock listing with exactly
+  one active item; otherwise it is `null`.
+- `GET /listings?sort=deadline` lists pre-orders only, closing soonest first,
+  with its own cursor kind. It answers 400 together with `q` or
+  `mode=in_stock`.
+- `GET /listings?seller=<uuid>` limits the list to one seller.
+
+## Categories
+
+- Admins add, rename and hide categories through `/admin/categories`. There
+  is no delete. The slug is made from the Vietnamese name once and never
+  changes.
+- A hidden category (`is_active = false`) is left out of `GET /categories`
+  and refuses new listings with `CATEGORY_INACTIVE`; listings already in it
+  stay visible and editable. Publishing also refuses a hidden category, which
+  covers drafts written earlier and reopened rounds.
+- Responses carry both `name` and `nameEn`; the frontend picks one. The API
+  never reads `Accept-Language`, so caches are not split by language.
+- Every category write bumps the listings cache version.
 
 ## Orders
 
@@ -136,6 +156,8 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
   spreadsheet: one row per order, one column per item. Totals come from SQL
   aggregates in `OrdersRepository.totalsForListing`, never from adding up rows
   in code, and never include cancelled orders.
+- `summary.csv` is written in the caller's `users.locale` (`vi` or `en`);
+  the labels live in `LABELS` in `summary-csv.ts`.
 - `summary.csv` is built by `buildSummaryCsv`. Buyers control some of that
   text, so any cell starting with `=`, `+`, `-` or `@` gets a leading
   apostrophe. Keep that when adding columns.
@@ -163,8 +185,9 @@ statement for the order code.
   the stored `search_text` and to every user query. Never compare raw text.
 - `toTsQuery` is the only way a user query reaches `to_tsquery`. It keeps
   letters and digits only, so search operators cannot be injected.
-- Browsing pages by keyset on `(published_at, id)`; ranked results page by
-  offset. Cursors are opaque and validated in `listing-cursor.ts`.
+- Browsing pages by keyset on `(published_at, id)`, closing-soonest by keyset
+  on `(order_deadline, id)`; ranked results page by offset. Cursors are opaque
+  and validated in `listing-cursor.ts`.
 
 ## Cache
 
@@ -191,6 +214,18 @@ statement for the order code.
 - Refresh token: opaque, 7 days, cookie `refresh_token`, stored hashed in Redis and rotated on every use.
 - The OAuth `state` value lives in the `oauth_state` cookie (`CookieStateStore`); there is no server-side session.
 
+## Roles and admin routes
+
+- `users.role` is `user` or `admin`. It is set at every sign-in and every
+  token refresh from `ADMIN_EMAILS` (`UsersService.upsertFromGoogle`,
+  `UsersService.syncRole`), so the variable is the
+  only source of truth; never write the role anywhere else.
+- Protect an admin route with `@UseGuards(JwtAuthGuard, RolesGuard)` and
+  `@Roles(UserRole.Admin)`. Admin routes live under `/admin/...`.
+- The role is re-checked against `ADMIN_EMAILS` at every sign-in and every
+  token refresh (`UsersService.syncRole`), so removing an email takes the role
+  away within one access-token lifetime (15 minutes).
+
 ## Development sign-in
 
 `GET /auth/dev-login?as=<name>` signs in as a made-up person
@@ -210,6 +245,10 @@ seller in two browser windows. Through the frontend it is
 - Write the test first. Unit tests sit next to the code as `*.spec.ts` and mock dependencies.
 - Integration tests in `test/` boot the real app against the `ssmarket_test` database and Redis database 1; only Google is faked. `test/setup-env.ts` forces those connections, so tests never touch development data.
 - Coverage must stay at or above 80% for lines, branches, functions and statements. Add tests rather than exclusions.
+- Integration tests truncate `users` between tests, which does not reset
+  `categories`. A test that changes categories restores them in `beforeEach`:
+  `DELETE FROM categories WHERE id > 6`, then the six seeded names and
+  `is_active = true`.
 
 ## Environment
 
@@ -224,6 +263,7 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `ALLOWED_EMAIL_DOMAIN` | Only this email domain may sign in |
 | `JWT_ACCESS_SECRET` | At least 32 characters |
 | `UPLOAD_DIR` | Directory for uploaded images (default `./uploads`) |
+| `ADMIN_EMAILS` | Comma-separated emails that get the admin role at sign-in |
 | `DEV_LOGIN_ENABLED` | `true` enables the development sign-in; development only |
 
 ## Conventions

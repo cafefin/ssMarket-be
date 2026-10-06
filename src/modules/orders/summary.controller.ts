@@ -25,6 +25,7 @@ import { normalizeForSearch } from '../../common/text/normalize.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { businessDate } from '../listings/listing-rules.js';
+import { UsersService } from '../users/users.service.js';
 import {
   BulkOrdersDto,
   BulkResponseDto,
@@ -40,7 +41,10 @@ const includeCancelledPipe = new ParseBoolPipe({ optional: true });
 @UseGuards(JwtAuthGuard)
 @ApiCookieAuth()
 export class SummaryController {
-  constructor(private readonly summary: SalesSummaryService) {}
+  constructor(
+    private readonly summary: SalesSummaryService,
+    private readonly users: UsersService,
+  ) {}
 
   @Get('summary')
   @ApiQuery({ name: 'includeCancelled', type: Boolean, required: false })
@@ -60,18 +64,20 @@ export class SummaryController {
   @Get('summary.csv')
   @ApiQuery({ name: 'includeCancelled', type: Boolean, required: false })
   @ApiProduces('text/csv')
-  @ApiOkResponse({ description: 'The summary as a CSV file for Excel' })
+  @ApiOkResponse({
+    description:
+      "The summary as a CSV file for Excel, in the caller's language",
+  })
   async csv(
     @CurrentUser() user: AuthUser,
     @Param('listingId', ParseUUIDPipe) listingId: string,
     @Res() res: Response,
     @Query('includeCancelled', includeCancelledPipe) includeCancelled?: boolean,
   ): Promise<void> {
-    const summary = await this.summary.getSummary(
-      user.id,
-      listingId,
-      includeCancelled ?? false,
-    );
+    const [summary, me] = await Promise.all([
+      this.summary.getSummary(user.id, listingId, includeCancelled ?? false),
+      this.users.getById(user.id),
+    ]);
     const slug =
       normalizeForSearch(summary.listing.title)
         .replace(/[^a-z0-9]+/g, '-')
@@ -83,7 +89,7 @@ export class SummaryController {
       'Content-Disposition': `attachment; filename="ssmarket-${slug}-${businessDate(new Date())}.csv"`,
       'Cache-Control': 'no-store',
     });
-    res.send(buildSummaryCsv(summary));
+    res.send(buildSummaryCsv(summary, me.locale));
   }
 
   @Post('orders/bulk')

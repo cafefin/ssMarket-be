@@ -1,14 +1,24 @@
 import { BadRequestException } from '@nestjs/common';
 
 /**
- * Newest-first browsing pages by keyset (stable while listings are added).
- * Ranked search results have no stable key, so they page by offset.
+ * Newest-first browsing pages by keyset (stable while listings are added),
+ * and so does closing-soonest. Ranked search results have no stable key, so
+ * they page by offset.
  */
 export type ListingCursor =
   | { kind: 'recent'; publishedAt: string; id: string }
+  | { kind: 'deadline'; orderDeadline: string; id: string }
   | { kind: 'ranked'; offset: number };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isIsoTimestamp(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
+}
 
 export function encodeCursor(cursor: ListingCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
@@ -29,15 +39,25 @@ export function decodeCursor(raw: string): ListingCursor {
   const candidate = value as Record<string, unknown>;
   if (
     candidate.kind === 'recent' &&
-    typeof candidate.publishedAt === 'string' &&
+    isIsoTimestamp(candidate.publishedAt) &&
     typeof candidate.id === 'string' &&
-    UUID.test(candidate.id) &&
-    !Number.isNaN(Date.parse(candidate.publishedAt)) &&
-    new Date(candidate.publishedAt).toISOString() === candidate.publishedAt
+    UUID.test(candidate.id)
   ) {
     return {
       kind: 'recent',
       publishedAt: candidate.publishedAt,
+      id: candidate.id,
+    };
+  }
+  if (
+    candidate.kind === 'deadline' &&
+    isIsoTimestamp(candidate.orderDeadline) &&
+    typeof candidate.id === 'string' &&
+    UUID.test(candidate.id)
+  ) {
+    return {
+      kind: 'deadline',
+      orderDeadline: candidate.orderDeadline,
       id: candidate.id,
     };
   }
