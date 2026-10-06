@@ -385,6 +385,8 @@ export class ListingsService {
         ? mediaUrl(thumbnailKey(row.image_key))
         : null,
       orderCount: row.order_count,
+      stockQuantity:
+        row.stock_quantity === null ? null : Number(row.stock_quantity),
       minUnitPrice: row.min_unit_price,
       minPriceUnit: row.min_price_unit,
       orderDeadline: row.order_deadline?.toISOString() ?? null,

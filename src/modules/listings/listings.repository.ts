@@ -65,6 +65,8 @@ export interface OpenListingRow {
   min_unit_price: number;
   min_price_unit: string;
   order_count: number;
+  /** Set only for an in-stock listing with exactly one, limited, item. */
+  stock_quantity: string | null;
 }
 
 @Injectable()
@@ -211,7 +213,9 @@ export class ListingsRepository {
         image.storage_key AS image_key,
         cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
         (SELECT COUNT(*)::int FROM orders o
-          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count
+          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
+        CASE WHEN l.mode = 'in_stock' AND stock.item_count = 1
+             THEN stock.only_stock END AS stock_quantity
       FROM listings l
       JOIN categories c ON c.id = l.category_id
       JOIN users u ON u.id = l.seller_id
@@ -223,6 +227,10 @@ export class ListingsRepository {
         SELECT unit_price, unit FROM listing_items
         WHERE listing_id = l.id AND is_active ORDER BY unit_price, sort_order LIMIT 1
       ) cheapest ON true
+      JOIN LATERAL (
+        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock
+        FROM listing_items WHERE listing_id = l.id AND is_active
+      ) stock ON true
       WHERE ${where.join(' AND ')}
       ORDER BY ${orderBy.join(', ')}
       LIMIT ${bind(search.limit)} ${offset}
