@@ -754,6 +754,34 @@ describe('Orders API', () => {
     });
   });
 
+  describe('order count on listings', () => {
+    type Counted = { orderCount: number };
+    const detailCount = async (listing: Listing) =>
+      ((await other.get(`/listings/${listing.id}`).expect(200)).body as Counted)
+        .orderCount;
+    const listCount = async (listing: Listing) =>
+      (
+        (await other.get('/listings').expect(200)).body as {
+          items: Array<Counted & { id: string }>;
+        }
+      ).items.find((candidate) => candidate.id === listing.id)?.orderCount;
+
+    it('counts live orders and follows placing and cancelling straight away', async () => {
+      const round = await preorder();
+      expect(await detailCount(round)).toBe(0);
+      expect(await listCount(round)).toBe(0);
+
+      const mine = await order(round, [['Cam sành', '1']]);
+      await order(round, [['Cam sành', '2']], {}, other);
+      expect(await detailCount(round)).toBe(2);
+      expect(await listCount(round)).toBe(2);
+
+      await act(buyer, mine.id, 'cancel').expect(200);
+      expect(await detailCount(round)).toBe(1);
+      expect(await listCount(round)).toBe(1);
+    });
+  });
+
   describe('editing a listing that has orders', () => {
     const edit = (listing: Listing, items: object[]) =>
       seller.patch(`/listings/${listing.id}`).send({

@@ -323,6 +323,7 @@ export class ListingsService {
       thumbnailUrl: row.image_key
         ? mediaUrl(thumbnailKey(row.image_key))
         : null,
+      orderCount: row.order_count,
       minUnitPrice: row.min_unit_price,
       minPriceUnit: row.min_price_unit,
       orderDeadline: row.order_deadline?.toISOString() ?? null,
