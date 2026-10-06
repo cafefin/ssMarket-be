@@ -182,7 +182,8 @@ seller in two browser windows. Through the frontend it is
   The module is registered conditionally, so elsewhere the route is a 404.
 - The app refuses to start when `DEV_LOGIN_ENABLED=true` in production.
 - Never widen these conditions, and never add another way to obtain a session
-  without Google. Automated tests do not use this route.
+  without Google. Backend tests do not use this route; the frontend's
+  Playwright suite does, against its own throwaway database.
 
 ## Testing
 
