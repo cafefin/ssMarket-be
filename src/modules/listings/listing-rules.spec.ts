@@ -1,6 +1,7 @@
 import {
   businessDate,
   isListingOpen,
+  suggestReopenDates,
   type ListingInput,
   type ListingItemInput,
   validateListingInput,
@@ -234,5 +235,71 @@ describe('media urls', () => {
   it('derives the thumbnail key and the browser path', () => {
     expect(thumbnailKey('listings/a/b.webp')).toBe('listings/a/b_thumb.webp');
     expect(mediaUrl('listings/a/b.webp')).toBe('/api/media/listings/a/b.webp');
+  });
+});
+
+describe('suggestReopenDates', () => {
+  // Friday 9 Oct 2026, 17:00 in Vietnam; delivery the following Monday.
+  const deadline = new Date('2026-10-09T10:00:00Z');
+  const delivery = '2026-10-12';
+
+  it('moves a round that ended this week to the same time next week', () => {
+    const next = suggestReopenDates(
+      deadline,
+      delivery,
+      new Date('2026-10-10T02:00:00Z'),
+    );
+
+    expect(next.orderDeadline.toISOString()).toBe('2026-10-16T10:00:00.000Z');
+    expect(next.deliveryDate).toBe('2026-10-19');
+  });
+
+  it('skips as many weeks as needed to land in the future', () => {
+    const next = suggestReopenDates(
+      deadline,
+      delivery,
+      new Date('2026-11-01T00:00:00Z'),
+    );
+
+    expect(next.orderDeadline.toISOString()).toBe('2026-11-06T10:00:00.000Z');
+    expect(next.deliveryDate).toBe('2026-11-09');
+  });
+
+  it('keeps a deadline that is still ahead', () => {
+    const next = suggestReopenDates(
+      deadline,
+      delivery,
+      new Date('2026-10-08T00:00:00Z'),
+    );
+
+    expect(next.orderDeadline).toEqual(deadline);
+    expect(next.deliveryDate).toBe(delivery);
+  });
+
+  it('keeps same-day delivery on the same day, across a month boundary', () => {
+    const next = suggestReopenDates(
+      new Date('2026-10-30T03:00:00Z'),
+      '2026-10-30',
+      new Date('2026-10-30T04:00:00Z'),
+    );
+
+    expect(next.deliveryDate).toBe('2026-11-06');
+  });
+
+  it('always proposes dates that pass validation', () => {
+    const next = suggestReopenDates(
+      deadline,
+      delivery,
+      new Date('2027-03-03T00:00:00Z'),
+    );
+
+    expect(
+      validateListingInput(
+        preorder({
+          orderDeadline: next.orderDeadline,
+          deliveryDate: next.deliveryDate,
+        }),
+      ),
+    ).toEqual([]);
   });
 });

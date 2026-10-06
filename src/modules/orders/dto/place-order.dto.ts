@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -69,3 +69,8 @@ export class CancelOrderDto {
   @MaxLength(300)
   reason?: string | null;
 }
+
+/** The same fields as placing an order, for an order that already exists. */
+export class EditOrderDto extends OmitType(PlaceOrderDto, [
+  'listingId',
+] as const) {}

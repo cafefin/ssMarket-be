@@ -123,6 +123,14 @@ export class ListingDetailDto {
   @ApiProperty({ description: 'Orders that have not been cancelled' })
   orderCount!: number;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description: 'The earlier round this listing was reopened from',
+  })
+  reopenedFromId!: string | null;
+
   @ApiProperty({ type: [ListingItemDto] })
   items!: ListingItemDto[];
 
@@ -145,6 +153,7 @@ export class ListingDetailDto {
     dto.deliveryDate = listing.deliveryDate;
     dto.publishedAt = listing.publishedAt?.toISOString() ?? null;
     dto.orderCount = listing.orderCount ?? 0;
+    dto.reopenedFromId = listing.reopenedFromId ?? null;
     dto.items = listing.items
       .filter((item) => item.isActive)
       .map((item) => ListingItemDto.from(item));

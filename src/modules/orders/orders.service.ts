@@ -44,6 +44,15 @@ import {
   type SalesFilters,
 } from './orders.repository.js';
 
+export type EditOrderInput = Omit<PlaceOrderInput, 'listingId'>;
+
+/** Price and labels of a line as they were when the order was placed. */
+interface LineSnapshot {
+  itemName: string;
+  unit: string;
+  unitPrice: number;
+}
+
 export interface PlaceOrderInput {
   listingId: string;
   lines: { itemId: string; quantity: string }[];
@@ -129,6 +138,73 @@ export class OrdersService {
       PAGE_SIZE + 1,
     );
     return this.toPage(orders, OrderActor.Seller);
+  }
+
+  /**
+   * Lets a buyer change a pre-order until its deadline, like editing their
+   * row in the spreadsheet this replaces. Items already in the order keep
+   * the price they were ordered at; items added now use the current price.
+   */
+  async edit(
+    buyerId: string,
+    id: string,
+    input: EditOrderInput,
+  ): Promise<OrderDetailDto> {
+    await this.transactions.run(async (tx) => {
+      const order = await this.orders.findForUpdate(tx, id);
+      const actor = order ? actorOf(order, buyerId) : null;
+      if (!order || !actor) {
+        throw new NotFoundException('Order not found');
+      }
+      if (actor !== OrderActor.Buyer) {
+        throw new ForbiddenException('Only the buyer can edit an order');
+      }
+      const reason = editBlocker(order, new Date());
+      if (reason) {
+        throw new DomainException(
+          409,
+          'ORDER_NOT_EDITABLE',
+          `This order can no longer be edited (${reason})`,
+          { reason },
+        );
+      }
+
+      const listing = await this.listings.findById(order.listingId);
+      if (!listing) {
+        throw new NotFoundException('Listing not found');
+      }
+      this.assertPaymentMethod(listing, input.paymentMethod);
+      const deliveryLocation = this.cleanDeliveryLocation(
+        input.deliveryLocation,
+      );
+      const lines = this.buildLines(
+        listing,
+        input.lines,
+        new Map(
+          order.lines.map((line) => [
+            line.listingItemId,
+            {
+              itemName: line.itemName,
+              unit: line.unit,
+              unitPrice: line.unitPrice,
+            },
+          ]),
+        ),
+      );
+
+      const qr = input.paymentMethod === PaymentMethod.PrepaidQr;
+      await this.orders.replaceLines(tx, id, lines, {
+        totalAmount: lines.reduce((sum, line) => sum + line.lineTotal, 0),
+        paymentMethod: input.paymentMethod,
+        deliveryLocation,
+        note: input.note?.trim() || null,
+        sellerBankBin: qr ? listing.seller.bankBin : null,
+        sellerBankAccountNumber: qr ? listing.seller.bankAccountNumber : null,
+        sellerBankAccountName: qr ? listing.seller.bankAccountName : null,
+      });
+    });
+    await this.listings.invalidateCache();
+    return this.getForParticipant(buyerId, id);
   }
 
   reportPayment(buyerId: string, id: string): Promise<OrderDetailDto> {
@@ -259,15 +335,7 @@ export class OrdersService {
     }
     this.assertPaymentMethod(listing, input.paymentMethod);
 
-    const deliveryLocation = input.deliveryLocation.trim();
-    if (
-      deliveryLocation.length === 0 ||
-      deliveryLocation.length > ORDER_LIMITS.deliveryLocationMax
-    ) {
-      throw new BadRequestException(
-        `deliveryLocation must be 1-${ORDER_LIMITS.deliveryLocationMax} characters`,
-      );
-    }
+    const deliveryLocation = this.cleanDeliveryLocation(input.deliveryLocation);
     const lines = this.buildLines(listing, input.lines);
     const isPreorder = listing.mode === ListingMode.Preorder;
 
@@ -300,6 +368,19 @@ export class OrdersService {
     return id;
   }
 
+  private cleanDeliveryLocation(value: string): string {
+    const deliveryLocation = value.trim();
+    if (
+      deliveryLocation.length === 0 ||
+      deliveryLocation.length > ORDER_LIMITS.deliveryLocationMax
+    ) {
+      throw new BadRequestException(
+        `deliveryLocation must be 1-${ORDER_LIMITS.deliveryLocationMax} characters`,
+      );
+    }
+    return deliveryLocation;
+  }
+
   private assertPaymentMethod(listing: Listing, method: PaymentMethod): void {
     const accepted =
       method === PaymentMethod.PrepaidQr
@@ -314,16 +395,31 @@ export class OrdersService {
     }
   }
 
-  /** Validates the requested lines and prices them from the listing's data. */
+  /**
+   * Validates the requested lines and prices them from the listing's data.
+   * When editing, `snapshots` holds the lines the order already has: those
+   * items stay orderable at their original price even if the seller has
+   * since changed or removed them.
+   */
   private buildLines(
     listing: Listing,
     requested: PlaceOrderInput['lines'],
+    snapshots: Map<string, LineSnapshot> = new Map(),
   ): NewOrderLine[] {
-    const items = new Map(
-      listing.items
-        .filter((item) => item.isActive)
-        .map((item) => [item.id, item]),
-    );
+    const items = new Map<string, LineSnapshot & { id: string }>();
+    for (const item of listing.items) {
+      const snapshot = snapshots.get(item.id);
+      if (snapshot) {
+        items.set(item.id, { id: item.id, ...snapshot });
+      } else if (item.isActive) {
+        items.set(item.id, {
+          id: item.id,
+          itemName: item.name,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+        });
+      }
+    }
     const problems: string[] = [];
     const seen = new Set<string>();
     const lines: NewOrderLine[] = [];
@@ -338,7 +434,7 @@ export class OrdersService {
         return;
       }
       if (seen.has(item.id)) {
-        problems.push(`line ${index + 1}: ${item.name} appears twice`);
+        problems.push(`line ${index + 1}: ${item.itemName} appears twice`);
         return;
       }
       seen.add(item.id);
@@ -350,7 +446,7 @@ export class OrdersService {
       }
       lines.push({
         listingItemId: item.id,
-        itemName: item.name,
+        itemName: item.itemName,
         unit: item.unit,
         unitPrice: item.unitPrice,
         quantity: line.quantity,
@@ -498,6 +594,23 @@ function actorOf(order: Order, userId: string): OrderActor | null {
     return OrderActor.Buyer;
   }
   return order.sellerId === userId ? OrderActor.Seller : null;
+}
+
+/** Why an order cannot be edited any more, or null when it still can. */
+function editBlocker(order: Order, now: Date): string | null {
+  if (!order.isPreorder) {
+    return 'not_preorder';
+  }
+  if (order.fulfillmentStatus === FulfillmentStatus.Cancelled) {
+    return 'cancelled';
+  }
+  if (order.fulfillmentStatus === FulfillmentStatus.Delivered) {
+    return 'delivered';
+  }
+  if (order.paymentStatus !== PaymentStatus.Unpaid) {
+    return 'payment_reported';
+  }
+  return isListingOpen(order.listing, now) ? null : 'deadline_passed';
 }
 
 function alreadyOrdered(orderId: string | undefined): DomainException {

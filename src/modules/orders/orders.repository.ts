@@ -51,6 +51,17 @@ export interface OrderChanges {
   refundNeeded?: boolean;
 }
 
+/** What an edit may change on the order itself, besides its lines. */
+export interface OrderEdit {
+  totalAmount: number;
+  paymentMethod: PaymentMethod;
+  deliveryLocation: string;
+  note: string | null;
+  sellerBankBin: string | null;
+  sellerBankAccountNumber: string | null;
+  sellerBankAccountName: string | null;
+}
+
 export interface SalesFilters {
   listingId?: string;
   paymentStatus?: PaymentStatus;
@@ -156,6 +167,21 @@ export class OrdersRepository {
     await tx.update(Order, { id }, changes);
   }
 
+  /** Replaces all lines of an order and updates its totals, in the caller's transaction. */
+  async replaceLines(
+    tx: Tx,
+    id: string,
+    lines: NewOrderLine[],
+    edit: OrderEdit,
+  ): Promise<void> {
+    await tx.delete(OrderLine, { orderId: id });
+    await tx.insert(
+      OrderLine,
+      lines.map((line) => ({ ...line, orderId: id })),
+    );
+    await tx.update(Order, { id }, edit);
+  }
+
   listForBuyer(
     buyerId: string,
     cursor: OrderCursor | null,
@@ -216,4 +242,74 @@ export class OrdersRepository {
     const byId = new Map(orders.map((order) => [order.id, order]));
     return ids.map((id) => byId.get(id) as Order);
   }
+
+  countForListing(listingId: string): Promise<number> {
+    return this.repository.count({ where: { listingId } });
+  }
+
+  /** Every order on a listing, oldest first, for the seller's summary. */
+  listForListing(
+    listingId: string,
+    includeCancelled: boolean,
+  ): Promise<Order[]> {
+    return this.repository.find({
+      where: {
+        listingId,
+        ...(includeCancelled
+          ? {}
+          : { fulfillmentStatus: Not(FulfillmentStatus.Cancelled) }),
+      },
+      relations: RELATIONS,
+      order: { createdAt: 'ASC', id: 'ASC', ...LINE_ORDER },
+    });
+  }
+
+  /**
+   * Totals over the listing's live (not cancelled) orders, computed by the
+   * database so they cannot drift from the rows.
+   */
+  async totalsForListing(listingId: string): Promise<ListingTotals> {
+    const [money]: Array<{ order_count: number; total: string; paid: string }> =
+      await this.repository.query(
+        `SELECT COUNT(*)::int AS order_count,
+                COALESCE(SUM(total_amount), 0) AS total,
+                COALESCE(SUM(total_amount) FILTER (WHERE payment_status = 'paid'), 0) AS paid
+           FROM orders
+          WHERE listing_id = $1 AND fulfillment_status <> 'cancelled'`,
+        [listingId],
+      );
+    const quantities: Array<{ item_id: string; quantity: string }> =
+      await this.repository.query(
+        `SELECT ol.listing_item_id AS item_id, SUM(ol.quantity) AS quantity
+           FROM order_lines ol
+           JOIN orders o ON o.id = ol.order_id
+          WHERE o.listing_id = $1 AND o.fulfillment_status <> 'cancelled'
+          GROUP BY ol.listing_item_id`,
+        [listingId],
+      );
+    return {
+      orderCount: money.order_count,
+      totalAmount: Number(money.total),
+      paidAmount: Number(money.paid),
+      quantities: Object.fromEntries(
+        quantities.map((row) => [row.item_id, Number(row.quantity)]),
+      ),
+    };
+  }
+
+  /** Which listing each of the given orders belongs to. */
+  async listingIdsOf(orderIds: string[]): Promise<Map<string, string>> {
+    const orders = await this.repository.find({
+      where: orderIds.map((id) => ({ id })),
+      select: { id: true, listingId: true },
+    });
+    return new Map(orders.map((order) => [order.id, order.listingId]));
+  }
+}
+
+export interface ListingTotals {
+  orderCount: number;
+  totalAmount: number;
+  paidAmount: number;
+  quantities: Record<string, number>;
 }

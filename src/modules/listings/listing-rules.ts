@@ -180,3 +180,38 @@ export function isListingOpen(
       listing.orderDeadline.getTime() > now.getTime())
   );
 }
+
+const DAY_MS = 86_400_000;
+const WEEK_MS = 7 * DAY_MS;
+
+/**
+ * Dates to propose when a finished pre-order round is reopened: the next
+ * time the same weekday and hour come round after `now`, with delivery the
+ * same number of days after the deadline as before. Sellers who run monthly
+ * simply change them; they are only a starting point.
+ */
+export function suggestReopenDates(
+  previousDeadline: Date,
+  previousDeliveryDate: string,
+  now: Date,
+): { orderDeadline: Date; deliveryDate: string } {
+  let orderDeadline = previousDeadline;
+  while (orderDeadline.getTime() <= now.getTime()) {
+    // Vietnam has no daylight saving, so a week is always 7 × 24 hours.
+    orderDeadline = new Date(orderDeadline.getTime() + WEEK_MS);
+  }
+
+  const asUtcDay = (date: string) => Date.parse(`${date}T00:00:00Z`);
+  const gapDays = Math.round(
+    (asUtcDay(previousDeliveryDate) -
+      asUtcDay(businessDate(previousDeadline))) /
+      DAY_MS,
+  );
+  const deliveryDate = new Date(
+    asUtcDay(businessDate(orderDeadline)) + gapDays * DAY_MS,
+  )
+    .toISOString()
+    .slice(0, 10);
+
+  return { orderDeadline, deliveryDate };
+}

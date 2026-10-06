@@ -20,9 +20,11 @@ import {
   encodeCursor,
   type ListingCursor,
 } from './listing-cursor.js';
+import { ListingImagesService } from './listing-images.service.js';
 import {
   isListingOpen,
   type ListingInput,
+  suggestReopenDates,
   validateListingInput,
 } from './listing-rules.js';
 import type { Listing } from './listing.entity.js';
@@ -61,6 +63,7 @@ export class ListingsService {
     private readonly users: UsersService,
     private readonly categories: CategoriesService,
     private readonly cache: CacheService,
+    private readonly images: ListingImagesService,
   ) {}
 
   async create(sellerId: string, input: ListingInput): Promise<Listing> {
@@ -153,6 +156,63 @@ export class ListingsService {
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
     return this.mustFind(id);
+  }
+
+  /**
+   * Starts the next round of a finished pre-order: a new draft with the same
+   * items, prices and photos, linked to the round it came from. The source
+   * listing and its orders are left exactly as they are.
+   */
+  async reopen(sellerId: string, id: string): Promise<Listing> {
+    const source = await this.findOwned(sellerId, id);
+    if (
+      source.mode !== ListingMode.Preorder ||
+      source.orderDeadline === null ||
+      source.deliveryDate === null
+    ) {
+      throw this.invalidState('Only a pre-order listing can be reopened');
+    }
+    const now = new Date();
+    if (source.status === ListingStatus.Draft || isListingOpen(source, now)) {
+      throw this.invalidState('Only a finished round can be reopened');
+    }
+
+    const items = source.items
+      .filter((item) => item.isActive)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((item, index) => ({
+        name: item.name,
+        unit: item.unit,
+        unitPrice: item.unitPrice,
+        stockQuantity: null,
+        sortOrder: index,
+      }));
+    const newId = await this.listings.insert(
+      {
+        sellerId,
+        mode: source.mode,
+        status: ListingStatus.Draft,
+        categoryId: source.categoryId,
+        title: source.title,
+        description: source.description,
+        acceptsPrepaidQr: source.acceptsPrepaidQr,
+        acceptsPayOnDelivery: source.acceptsPayOnDelivery,
+        ...suggestReopenDates(source.orderDeadline, source.deliveryDate, now),
+        searchText: buildSearchText({
+          title: source.title,
+          description: source.description,
+          items,
+        }),
+        publishedAt: null,
+        closedAt: null,
+        reopenedFromId: source.id,
+      },
+      items,
+    );
+    await this.images.copyAll(source.images, newId);
+
+    await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
+    return this.mustFind(newId);
   }
 
   /**

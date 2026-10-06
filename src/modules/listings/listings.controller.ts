@@ -91,6 +91,21 @@ export class ListingsController {
     return ListingDetailDto.from(listing, new Date());
   }
 
+  @Post(':id/reopen')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle(WRITE_LIMIT)
+  @ApiCreatedResponse({
+    type: ListingDetailDto,
+    description: 'A new draft copied from this finished pre-order round',
+  })
+  async reopen(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<ListingDetailDto> {
+    const listing = await this.listings.reopen(user.id, id);
+    return ListingDetailDto.from(listing, new Date());
+  }
+
   @Post(':id/close')
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: ListingDetailDto })

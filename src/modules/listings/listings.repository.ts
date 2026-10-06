@@ -22,6 +22,8 @@ export interface ListingFields {
   searchText: string;
   publishedAt: Date | null;
   closedAt: Date | null;
+  /** The listing this one was reopened from, if any. */
+  reopenedFromId?: string | null;
 }
 
 export interface ListingItemFields {
