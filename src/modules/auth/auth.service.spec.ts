@@ -137,18 +137,20 @@ describe('AuthService', () => {
         refreshToken: 'refresh-token',
       });
     });
-  });
 
-  it('signs the refreshed token with the role from syncRole', async () => {
-    refreshTokens.consume.mockResolvedValue('user-1');
-    users.syncRole.mockResolvedValue({ ...user, role: UserRole.Admin });
+    it('signs the refreshed token with the role from syncRole', async () => {
+      refreshTokens.consume.mockResolvedValue('user-1');
+      users.syncRole.mockResolvedValue(
+        Object.assign(new User(), user, { role: UserRole.Admin }),
+      );
 
-    await service.refresh('old-token');
+      await service.refresh('old-token');
 
-    expect(users.syncRole).toHaveBeenCalledWith(user);
-    expect(jwt.signAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: user.id, role: UserRole.Admin }),
-    );
+      expect(users.syncRole).toHaveBeenCalledWith(user);
+      expect(jwt.signAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: user.id, role: UserRole.Admin }),
+      );
+    });
   });
 
   describe('logout', () => {
