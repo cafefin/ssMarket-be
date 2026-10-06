@@ -10,6 +10,7 @@ import {
   MinLength,
   validateSync,
 } from 'class-validator';
+import { parseAdminEmails } from './admin-emails.js';
 
 export enum NodeEnv {
   Development = 'development',
@@ -60,6 +61,10 @@ export class EnvironmentVariables {
   @IsIn(['true', 'false'])
   DEV_LOGIN_ENABLED: string = 'false';
 
+  /** Comma-separated emails that get the admin role at sign-in. */
+  @IsString()
+  ADMIN_EMAILS: string = '';
+
   /** Directory where uploaded images are stored on local disk. */
   @IsString()
   @MinLength(1)
@@ -85,6 +90,9 @@ export function validateEnv(
   ) {
     throw new Error('DEV_LOGIN_ENABLED must not be true in production');
   }
+
+  // Throws on a malformed entry, so a typo cannot silently drop an admin.
+  parseAdminEmails(validated.ADMIN_EMAILS);
 
   return validated;
 }

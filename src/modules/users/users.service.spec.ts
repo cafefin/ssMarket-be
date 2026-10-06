@@ -1,5 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import type { Mocked } from 'vitest';
+import type { EnvironmentVariables } from '../../config/env.validation.js';
 import { BanksService } from '../banks/banks.service.js';
 import { User, UserRole } from './user.entity.js';
 import type { UsersRepository } from './users.repository.js';
@@ -36,16 +38,23 @@ describe('UsersService', () => {
   >;
   let service: UsersService;
 
+  const buildService = (adminEmails: string) =>
+    new UsersService(
+      repository as unknown as UsersRepository,
+      new BanksService(),
+      { get: () => adminEmails } as unknown as ConfigService<
+        EnvironmentVariables,
+        true
+      >,
+    );
+
   beforeEach(() => {
     repository = {
       findById: vi.fn(),
       findByGoogleId: vi.fn(),
       save: vi.fn((user: Partial<User>) => Promise.resolve(buildUser(user))),
     };
-    service = new UsersService(
-      repository as unknown as UsersRepository,
-      new BanksService(),
-    );
+    service = buildService('');
   });
 
   describe('upsertFromGoogle', () => {
@@ -59,8 +68,32 @@ describe('UsersService', () => {
         email: 'an@example.com',
         name: 'An Nguyen',
         avatarUrl: 'https://img.example.com/a.png',
+        role: UserRole.User,
       });
       expect(user.email).toBe('an@example.com');
+    });
+
+    it('makes a listed email an admin, whatever its case', async () => {
+      repository.findByGoogleId.mockResolvedValue(null);
+      service = buildService('AN@example.com');
+
+      await service.upsertFromGoogle(profile);
+
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ role: UserRole.Admin }),
+      );
+    });
+
+    it('takes the role away from someone no longer listed', async () => {
+      repository.findByGoogleId.mockResolvedValue(
+        buildUser({ role: UserRole.Admin }),
+      );
+
+      await service.upsertFromGoogle(profile);
+
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1', role: UserRole.User }),
+      );
     });
 
     it('updates name and avatar on the existing user and keeps its id', async () => {

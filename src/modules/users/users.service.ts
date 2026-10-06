@@ -3,9 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { parseAdminEmails } from '../../config/admin-emails.js';
+import type { EnvironmentVariables } from '../../config/env.validation.js';
 import { stripDiacritics } from '../../common/text/normalize.js';
 import { BanksService } from '../banks/banks.service.js';
-import type { User } from './user.entity.js';
+import { type User, UserRole } from './user.entity.js';
 import { UsersRepository } from './users.repository.js';
 
 export interface GoogleProfile {
@@ -25,21 +28,35 @@ export interface UpdateProfileInput {
 
 @Injectable()
 export class UsersService {
+  private readonly adminEmails: Set<string>;
+
   constructor(
     private readonly users: UsersRepository,
     private readonly banks: BanksService,
-  ) {}
+    config: ConfigService<EnvironmentVariables, true>,
+  ) {
+    this.adminEmails = parseAdminEmails(
+      config.get('ADMIN_EMAILS', { infer: true }),
+    );
+  }
 
+  /**
+   * Creates or refreshes the account at sign-in. The role follows
+   * ADMIN_EMAILS on every sign-in, so removing an email there takes the
+   * role away the next time that person signs in.
+   */
   async upsertFromGoogle(profile: GoogleProfile): Promise<User> {
     const existing = await this.users.findByGoogleId(profile.googleId);
+    const email = profile.email.toLowerCase();
 
     return this.users.save({
       // Passing the existing id turns the save into an update.
       id: existing?.id,
       googleId: profile.googleId,
-      email: profile.email.toLowerCase(),
+      email,
       name: profile.name,
       avatarUrl: profile.avatarUrl,
+      role: this.adminEmails.has(email) ? UserRole.Admin : UserRole.User,
     });
   }
 

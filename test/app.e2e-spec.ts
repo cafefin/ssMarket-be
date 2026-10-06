@@ -4,6 +4,7 @@ import request from 'supertest';
 import { DataSource } from 'typeorm';
 import type { GoogleIdentity } from '../src/modules/auth/auth.types.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
+import { signIn } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
 
 const employee: GoogleIdentity = {
@@ -168,6 +169,20 @@ describe('ssMarket API', () => {
         bankAccountNumber: null,
         bankAccountName: null,
       });
+    });
+  });
+
+  describe('admin role', () => {
+    it('gives the admin role to an email listed in ADMIN_EMAILS', async () => {
+      const admin = await signIn(app, identity, 'admin');
+      const other = await signIn(app, identity, 'someone');
+
+      expect((await admin.get('/users/me').expect(200)).body.role).toBe(
+        'admin',
+      );
+      expect((await other.get('/users/me').expect(200)).body.role).toBe(
+        'user',
+      );
     });
   });
 

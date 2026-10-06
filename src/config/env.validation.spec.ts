@@ -75,4 +75,23 @@ describe('validateEnv', () => {
       );
     });
   });
+
+  describe('ADMIN_EMAILS', () => {
+    it('defaults to empty', () => {
+      expect(validateEnv(valid).ADMIN_EMAILS).toBe('');
+    });
+
+    it('accepts a comma-separated list', () => {
+      expect(
+        validateEnv({ ...valid, ADMIN_EMAILS: 'a@example.com, b@example.com' })
+          .ADMIN_EMAILS,
+      ).toBe('a@example.com, b@example.com');
+    });
+
+    it('refuses to start when an entry is not an email', () => {
+      expect(() => validateEnv({ ...valid, ADMIN_EMAILS: 'nope' })).toThrow(
+        'Invalid ADMIN_EMAILS entry: nope',
+      );
+    });
+  });
 });
