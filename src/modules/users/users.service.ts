@@ -57,8 +57,27 @@ export class UsersService {
       email,
       name: profile.name,
       avatarUrl: profile.avatarUrl,
-      role: this.adminEmails.has(email) ? UserRole.Admin : UserRole.User,
+      role: this.roleFor(email),
     });
+  }
+
+  /**
+   * Re-applies ADMIN_EMAILS to an existing user, saving only when the role
+   * changed. Called when tokens are refreshed.
+   */
+  async syncRole(user: User): Promise<User> {
+    const role = this.roleFor(user.email);
+    if (user.role === role) {
+      return user;
+    }
+    user.role = role;
+    return this.users.save(user);
+  }
+
+  private roleFor(email: string): UserRole {
+    return this.adminEmails.has(email.toLowerCase())
+      ? UserRole.Admin
+      : UserRole.User;
   }
 
   findById(id: string): Promise<User | null> {

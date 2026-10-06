@@ -27,7 +27,11 @@ const identity: GoogleIdentity = {
 };
 
 describe('AuthService', () => {
-  const users = { upsertFromGoogle: vi.fn(), findById: vi.fn() };
+  const users = {
+    upsertFromGoogle: vi.fn(),
+    findById: vi.fn(),
+    syncRole: vi.fn(),
+  };
   const jwt = { signAsync: vi.fn() };
   const refreshTokens = { issue: vi.fn(), consume: vi.fn(), revoke: vi.fn() };
   let service: AuthService;
@@ -36,6 +40,9 @@ describe('AuthService', () => {
     vi.resetAllMocks();
     users.upsertFromGoogle.mockResolvedValue(user);
     users.findById.mockResolvedValue(user);
+    users.syncRole.mockImplementation((value: unknown) =>
+      Promise.resolve(value),
+    );
     jwt.signAsync.mockResolvedValue('access-jwt');
     refreshTokens.issue.mockResolvedValue('refresh-token');
     const config = { get: () => 'Example.com' };
@@ -130,6 +137,18 @@ describe('AuthService', () => {
         refreshToken: 'refresh-token',
       });
     });
+  });
+
+  it('signs the refreshed token with the role from syncRole', async () => {
+    refreshTokens.consume.mockResolvedValue('user-1');
+    users.syncRole.mockResolvedValue({ ...user, role: UserRole.Admin });
+
+    await service.refresh('old-token');
+
+    expect(users.syncRole).toHaveBeenCalledWith(user);
+    expect(jwt.signAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: user.id, role: UserRole.Admin }),
+    );
   });
 
   describe('logout', () => {

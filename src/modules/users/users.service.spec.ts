@@ -58,6 +58,33 @@ describe('UsersService', () => {
     service = buildService('');
   });
 
+  describe('syncRole', () => {
+    it('takes the role away from a no-longer-listed admin and saves', async () => {
+      const user = buildUser({ role: UserRole.Admin });
+
+      const synced = await service.syncRole(user);
+
+      expect(synced.role).toBe(UserRole.User);
+      expect(repository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('promotes a newly listed user', async () => {
+      service = buildService('an@example.com');
+
+      const synced = await service.syncRole(buildUser());
+
+      expect(synced.role).toBe(UserRole.Admin);
+      expect(repository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not save when the role is unchanged', async () => {
+      const user = buildUser();
+
+      await expect(service.syncRole(user)).resolves.toBe(user);
+      expect(repository.save).not.toHaveBeenCalled();
+    });
+  });
+
   describe('upsertFromGoogle', () => {
     it('creates a user with a lowercased email when none exists', async () => {
       repository.findByGoogleId.mockResolvedValue(null);

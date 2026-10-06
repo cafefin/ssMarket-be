@@ -216,13 +216,15 @@ statement for the order code.
 
 ## Roles and admin routes
 
-- `users.role` is `user` or `admin`. It is set at every sign-in from
-  `ADMIN_EMAILS` (`UsersService.upsertFromGoogle`), so the variable is the
+- `users.role` is `user` or `admin`. It is set at every sign-in and every
+  token refresh from `ADMIN_EMAILS` (`UsersService.upsertFromGoogle`,
+  `UsersService.syncRole`), so the variable is the
   only source of truth; never write the role anywhere else.
 - Protect an admin route with `@UseGuards(JwtAuthGuard, RolesGuard)` and
   `@Roles(UserRole.Admin)`. Admin routes live under `/admin/...`.
-- The role is read from the access token, so a change takes effect at the
-  next sign-in.
+- The role is re-checked against `ADMIN_EMAILS` at every sign-in and every
+  token refresh (`UsersService.syncRole`), so removing an email takes the role
+  away within one access-token lifetime (15 minutes).
 
 ## Development sign-in
 
