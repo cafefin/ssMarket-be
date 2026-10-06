@@ -22,9 +22,23 @@ describe('Admin categories API', () => {
     acceptsPrepaidQr: false,
     acceptsPayOnDelivery: true,
     items: [
-      { name: 'Clean Code', unit: 'cái', unitPrice: 150000, stockQuantity: '1' },
+      {
+        name: 'Clean Code',
+        unit: 'cái',
+        unitPrice: 150000,
+        stockQuantity: '1',
+      },
     ],
   });
+
+  const restoreCategories = async () => {
+    await dataSource.query('DELETE FROM categories WHERE id > 6');
+    await dataSource.query(`
+      UPDATE categories SET name = v.name, name_en = v.name_en, is_active = true
+      FROM (VALUES (1,'Đồ cũ','Second-hand'),(2,'Thực phẩm tươi','Fresh food'),(3,'Đồ ăn','Food'),(4,'Điện tử','Electronics'),(5,'Gia dụng','Household'),(6,'Khác','Other')) AS v(id,name,name_en)
+      WHERE categories.id = v.id
+    `);
+  };
 
   beforeAll(async () => {
     app = await createTestApp(identity);
@@ -34,16 +48,14 @@ describe('Admin categories API', () => {
 
   beforeEach(async () => {
     await dataSource.query('TRUNCATE TABLE users CASCADE');
-    await dataSource.query('DELETE FROM categories WHERE id > 6');
-    await dataSource.query('UPDATE categories SET is_active = true');
+    await restoreCategories();
     await redis.flushdb();
     admin = await signIn(app, identity, 'admin');
     user = await signIn(app, identity, 'buyer');
   });
 
   afterAll(async () => {
-    await dataSource.query('DELETE FROM categories WHERE id > 6');
-    await dataSource.query('UPDATE categories SET is_active = true');
+    await restoreCategories();
     await app.close();
   });
 
@@ -114,10 +126,18 @@ describe('Admin categories API', () => {
       name: 'Đồ công nghệ',
       nameEn: 'Tech',
     });
+  });
+
+  it('refuses to publish a draft once its category is hidden', async () => {
+    const id = (await user.post('/listings').send(draft(4)).expect(201)).body
+      .id;
     await admin
       .patch('/admin/categories/4')
-      .send({ name: 'Điện tử', nameEn: 'Electronics' })
+      .send({ isActive: false })
       .expect(200);
+
+    const refused = await user.post(`/listings/${id}/publish`).expect(400);
+    expect(refused.body.code).toBe('CATEGORY_INACTIVE');
   });
 
   it('hides a category from lists and from new listings, but keeps old ones', async () => {

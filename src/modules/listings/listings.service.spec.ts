@@ -344,6 +344,15 @@ describe('ListingsService', () => {
       );
     });
 
+    it('refuses a draft whose category has been hidden', async () => {
+      categories.findById.mockResolvedValue({ id: 1, isActive: false });
+
+      await expect(codeOf(service.publish(SELLER, 'listing-1'))).resolves.toBe(
+        'CATEGORY_INACTIVE',
+      );
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
     it("is 403 for someone else's listing", async () => {
       await expect(service.publish(OTHER, 'listing-1')).rejects.toBeInstanceOf(
         ForbiddenException,
@@ -410,7 +419,7 @@ describe('ListingsService', () => {
     });
   });
 
-  it("lists the seller’s listings with an optional status filter", async () => {
+  it('lists the seller’s listings with an optional status filter', async () => {
     repository.findBySeller.mockResolvedValue([stored()]);
 
     await service.listMine(SELLER, ListingStatus.Draft);
@@ -419,60 +428,6 @@ describe('ListingsService', () => {
       SELLER,
       ListingStatus.Draft,
     );
-  });
-
-  describe("search", () => {
-    it("maps stock_quantity from row to DTO", async () => {
-      const rowWithStock = {
-        id: "listing-1",
-        title: "Test listing",
-        mode: ListingMode.InStock,
-        order_deadline: null,
-        delivery_date: null,
-        published_at: new Date("2026-10-05T03:00:00Z"),
-        category_id: 1,
-        category_slug: "do-cu",
-        category_name: "Đồ cũ",
-        category_name_en: "Second-hand",
-        seller_id: SELLER,
-        seller_name: "Test Seller",
-        seller_avatar_url: null,
-        image_key: null,
-        min_unit_price: 100000,
-        min_price_unit: "cái",
-        order_count: 0,
-        stock_quantity: "24.000",
-      };
-
-      const summary = (service as any).toSummary(rowWithStock);
-      expect(summary.stockQuantity).toBe(24);
-    });
-
-    it("maps null stock_quantity to null in DTO", async () => {
-      const rowWithoutStock = {
-        id: "listing-2",
-        title: "Test listing 2",
-        mode: ListingMode.InStock,
-        order_deadline: null,
-        delivery_date: null,
-        published_at: new Date("2026-10-05T03:00:00Z"),
-        category_id: 1,
-        category_slug: "do-cu",
-        category_name: "Đồ cũ",
-        category_name_en: "Second-hand",
-        seller_id: SELLER,
-        seller_name: "Test Seller",
-        seller_avatar_url: null,
-        image_key: null,
-        min_unit_price: 100000,
-        min_price_unit: "cái",
-        order_count: 0,
-        stock_quantity: null,
-      };
-
-      const summary = (service as any).toSummary(rowWithoutStock);
-      expect(summary.stockQuantity).toBeNull();
-    });
   });
 
   describe('search ordering and filters', () => {
@@ -516,6 +471,20 @@ describe('ListingsService', () => {
         cacheStore as unknown as CacheService,
         images as unknown as ListingImagesService,
       );
+    });
+
+    it.each([
+      ['24.000', 24],
+      ['0.000', 0],
+      [null, null],
+    ])('maps stock_quantity %j to %j', async (stock, expected) => {
+      search.searchOpen.mockResolvedValue([
+        { ...row('listing-1', null), stock_quantity: stock },
+      ]);
+
+      const page = await searching.search({});
+
+      expect(page.items[0].stockQuantity).toBe(expected);
     });
 
     it('passes the default sort and no seller to the repository', async () => {

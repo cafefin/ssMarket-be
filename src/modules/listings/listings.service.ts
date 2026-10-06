@@ -136,6 +136,8 @@ export class ListingsService {
     if (listing.acceptsPrepaidQr) {
       await this.assertBankProfile(sellerId);
     }
+    // The category may have been hidden after this draft was written.
+    await this.assertCategoryOpen(listing.categoryId);
 
     await this.listings.update(id, {
       status: ListingStatus.Open,
@@ -467,15 +469,26 @@ export class ListingsService {
     }
     // A listing already in a hidden category may stay there when edited.
     if (!category.isActive && category.id !== currentCategoryId) {
-      throw new DomainException(
-        400,
-        'CATEGORY_INACTIVE',
-        'This category no longer takes listings',
-      );
+      throw this.categoryInactive();
     }
     if (input.acceptsPrepaidQr) {
       await this.assertBankProfile(sellerId);
     }
+  }
+
+  private async assertCategoryOpen(categoryId: number): Promise<void> {
+    const category = await this.categories.findById(categoryId);
+    if (!category?.isActive) {
+      throw this.categoryInactive();
+    }
+  }
+
+  private categoryInactive(): DomainException {
+    return new DomainException(
+      400,
+      'CATEGORY_INACTIVE',
+      'This category no longer takes listings',
+    );
   }
 
   private async assertBankProfile(sellerId: string): Promise<void> {

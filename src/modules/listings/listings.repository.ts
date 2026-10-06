@@ -199,7 +199,10 @@ export class ListingsRepository {
     let orderBy = ['l.published_at DESC', 'l.id DESC'];
     let offset = '';
     if (search.sort === ListingSort.Deadline) {
-      // The open condition above already requires a future deadline.
+      // The open condition above already requires a future deadline for
+      // these rows; the predicate is repeated so the planner can use the
+      // partial index IDX_listings_open_deadline.
+      where.push('l.order_deadline > $1');
       where.push(`l.mode = 'preorder'`);
       orderBy = ['l.order_deadline ASC', 'l.id ASC'];
       if (search.cursor?.kind === 'deadline') {
