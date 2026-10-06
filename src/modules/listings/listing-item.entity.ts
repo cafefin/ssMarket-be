@@ -42,4 +42,11 @@ export class ListingItem {
 
   @Column({ name: 'sort_order', type: 'smallint' })
   sortOrder!: number;
+
+  /**
+   * False once the seller removes an item that people have already ordered.
+   * It stays for those orders but is hidden and cannot be ordered again.
+   */
+  @Column({ name: 'is_active', type: 'boolean', default: true })
+  isActive!: boolean;
 }

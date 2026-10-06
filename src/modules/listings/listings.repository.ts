@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import type { Tx } from '../../database/transaction.js';
 import { ListingItem } from './listing-item.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
@@ -177,7 +178,7 @@ export class ListingsRepository {
       ) image ON true
       JOIN LATERAL (
         SELECT unit_price, unit FROM listing_items
-        WHERE listing_id = l.id ORDER BY unit_price, sort_order LIMIT 1
+        WHERE listing_id = l.id AND is_active ORDER BY unit_price, sort_order LIMIT 1
       ) cheapest ON true
       WHERE ${where.join(' AND ')}
       ORDER BY ${orderBy.join(', ')}
@@ -186,4 +187,74 @@ export class ListingsRepository {
       params,
     );
   }
+
+  /**
+   * Takes the quantities out of stock inside the caller's transaction.
+   * Returns the items that did not have enough (empty when all succeeded);
+   * the caller must then roll back.
+   *
+   * Each UPDATE checks and decrements in one statement, so two buyers can
+   * never both get the last unit. Rows are locked in id order so that two
+   * orders containing the same items cannot deadlock. For unlimited items
+   * the stock is NULL and stays NULL.
+   */
+  async reserveStock(
+    tx: Tx,
+    lines: ReadonlyArray<StockLine>,
+  ): Promise<StockShortage[]> {
+    const short: StockShortage[] = [];
+    for (const line of sortedByItem(lines)) {
+      const updated: unknown[] = await tx.query(
+        `UPDATE listing_items
+            SET stock_quantity = stock_quantity - $2::numeric
+          WHERE id = $1
+            AND is_active
+            AND (stock_quantity IS NULL OR stock_quantity >= $2::numeric)
+          RETURNING id`,
+        [line.itemId, line.quantity],
+      );
+      // node-postgres returns [rows, rowCount] for UPDATE ... RETURNING.
+      const rows = Array.isArray(updated[0]) ? updated[0] : updated;
+      if (rows.length === 0) {
+        const current: Array<{ stock_quantity: string | null }> =
+          await tx.query(
+            `SELECT stock_quantity FROM listing_items WHERE id = $1`,
+            [line.itemId],
+          );
+        short.push({
+          itemId: line.itemId,
+          available: current[0]?.stock_quantity ?? '0',
+        });
+      }
+    }
+    return short;
+  }
+
+  /** Puts quantities back, for a cancelled order. Unlimited items stay NULL. */
+  async releaseStock(tx: Tx, lines: ReadonlyArray<StockLine>): Promise<void> {
+    for (const line of sortedByItem(lines)) {
+      await tx.query(
+        `UPDATE listing_items
+            SET stock_quantity = stock_quantity + $2::numeric
+          WHERE id = $1`,
+        [line.itemId, line.quantity],
+      );
+    }
+  }
+}
+
+export interface StockLine {
+  itemId: string;
+  /** Decimal string with up to 3 fraction digits. */
+  quantity: string;
+}
+
+export interface StockShortage {
+  itemId: string;
+  /** What is left, as a decimal string. */
+  available: string;
+}
+
+function sortedByItem(lines: ReadonlyArray<StockLine>): StockLine[] {
+  return [...lines].sort((a, b) => a.itemId.localeCompare(b.itemId));
 }

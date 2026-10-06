@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
+import type { Tx } from '../../database/transaction.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { UsersService } from '../users/users.service.js';
 import { ListingDetailDto } from './dto/listing-response.dto.js';
@@ -35,6 +36,8 @@ import {
   type ListingItemFields,
   ListingsRepository,
   type OpenListingRow,
+  type StockLine,
+  type StockShortage,
 } from './listings.repository.js';
 import { mediaUrl, thumbnailKey } from './media-url.js';
 import { toTsQuery } from './search-query.js';
@@ -250,6 +253,28 @@ export class ListingsService {
     }
 
     return ListingDetailDto.from(await this.getForViewer(viewerId, id), now);
+  }
+
+  /** Any listing by id, for modules that apply their own access rules. */
+  findById(id: string): Promise<Listing | null> {
+    return this.listings.findByIdWithRelations(id);
+  }
+
+  /** See ListingsRepository.reserveStock. The caller owns the transaction. */
+  reserveStock(
+    tx: Tx,
+    lines: ReadonlyArray<StockLine>,
+  ): Promise<StockShortage[]> {
+    return this.listings.reserveStock(tx, lines);
+  }
+
+  releaseStock(tx: Tx, lines: ReadonlyArray<StockLine>): Promise<void> {
+    return this.listings.releaseStock(tx, lines);
+  }
+
+  /** Call after anything outside this service changed stock or order counts. */
+  invalidateCache(): Promise<void> {
+    return this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
   }
 
   listMine(sellerId: string, status?: ListingStatus): Promise<Listing[]> {

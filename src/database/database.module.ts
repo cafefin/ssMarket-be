@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import type { EnvironmentVariables } from '../config/env.validation.js';
 import { DatabaseHealth } from './database.health.js';
 import { migrations } from './migrations/index.js';
+import { TransactionRunner } from './transaction.js';
 
 @Global()
 @Module({
@@ -19,7 +20,7 @@ import { migrations } from './migrations/index.js';
       }),
     }),
   ],
-  providers: [DatabaseHealth],
-  exports: [DatabaseHealth],
+  providers: [DatabaseHealth, TransactionRunner],
+  exports: [DatabaseHealth, TransactionRunner],
 })
 export class DatabaseModule {}

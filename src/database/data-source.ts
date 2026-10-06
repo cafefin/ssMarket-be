@@ -4,6 +4,8 @@ import { Category } from '../modules/categories/category.entity.js';
 import { ListingImage } from '../modules/listings/listing-image.entity.js';
 import { ListingItem } from '../modules/listings/listing-item.entity.js';
 import { Listing } from '../modules/listings/listing.entity.js';
+import { OrderLine } from '../modules/orders/order-line.entity.js';
+import { Order } from '../modules/orders/order.entity.js';
 import { User } from '../modules/users/user.entity.js';
 import { migrations } from './migrations/index.js';
 
@@ -12,6 +14,14 @@ import { migrations } from './migrations/index.js';
 export default new DataSource({
   type: 'postgres',
   url: process.env.DATABASE_URL,
-  entities: [User, Category, Listing, ListingItem, ListingImage],
+  entities: [
+    User,
+    Category,
+    Listing,
+    ListingItem,
+    ListingImage,
+    Order,
+    OrderLine,
+  ],
   migrations,
 });

@@ -141,7 +141,9 @@ export class ListingDetailDto {
     dto.orderDeadline = listing.orderDeadline?.toISOString() ?? null;
     dto.deliveryDate = listing.deliveryDate;
     dto.publishedAt = listing.publishedAt?.toISOString() ?? null;
-    dto.items = listing.items.map((item) => ListingItemDto.from(item));
+    dto.items = listing.items
+      .filter((item) => item.isActive)
+      .map((item) => ListingItemDto.from(item));
     dto.images = listing.images.map((image) => ListingImageDto.from(image));
     return dto;
   }
