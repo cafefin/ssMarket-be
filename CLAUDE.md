@@ -31,7 +31,10 @@ src/
     ├── users/       accounts and seller profile (delivery location, bank)
     ├── banks/       static directory of banks that accept VietQR
     ├── categories/  reference data, seeded by migration
-    ├── listings/    listings, items, images, search
+    ├── listings/    listings, items, images, search, stock
+    ├── orders/      orders, state rules, idempotency
+    ├── payments/    VietQR payload builder
+    ├── dev-login/   development-only sign-in
     ├── storage/     StorageService (local disk today) and /media
     └── health/
 test/            integration tests (*.e2e-spec.ts) and their helpers
@@ -77,7 +80,12 @@ by hand in a controller.
 
 Use `DomainException(status, code, message)` when the frontend must react to a
 specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
-(422), `TOO_MANY_IMAGES` (409), `INVALID_LISTING_STATE` (409).
+(422), `TOO_MANY_IMAGES` (409), `INVALID_LISTING_STATE` (409), `OUT_OF_STOCK`
+(409), `LISTING_NOT_OPEN` (409), `ALREADY_ORDERED` (409),
+`INVALID_ORDER_STATE` (409), `REQUEST_IN_PROGRESS` (409), `OWN_LISTING` (422),
+`PAYMENT_METHOD_NOT_ACCEPTED` (422), `INVALID_QUANTITY` (422),
+`IDEMPOTENCY_KEY_REQUIRED` (400). Pass structured data the frontend needs
+(which items ran out, the id of an existing order) as the `details` argument.
 
 ## Listings
 
@@ -92,6 +100,42 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 - Money is integer VND. Quantities are `numeric(10,3)` and arrive from
   PostgreSQL as strings.
 - Other people get 404, not 403, for a listing they may not see.
+
+## Orders
+
+- An order has two independent state axes. Payment: `unpaid` → `reported` →
+  `paid`. Fulfilment: `pending` → `delivered` or `cancelled`. Delivering does
+  not mark an order paid, because pay-on-delivery is often collected later.
+  The rules are pure functions in `order-transitions.ts`; change them there.
+- The server never trusts amounts from the client. Prices come from the
+  listing, totals from `lineTotal`, which works in integers only (quantity in
+  thousandths) and rounds half up.
+- An order line snapshots the item's name, unit and price, and a QR order
+  snapshots the seller's bank details. Never read those from the listing or
+  the profile when showing an existing order.
+- **Stock changes only through `ListingsService.reserveStock` /
+  `releaseStock`, inside the order's transaction.** Each reservation is one
+  `UPDATE ... WHERE stock_quantity >= :q`, with rows taken in id order, so
+  concurrent buyers cannot oversell or deadlock. Never read stock, compare in
+  code, then write.
+- State changes load the order with `findForUpdate` (row lock) inside
+  `TransactionRunner.run`. Services receive the transaction as the opaque
+  type `Tx` and pass it to repositories.
+- `POST /orders` requires an `Idempotency-Key` header (`IdempotencyService`),
+  so a double click creates one order.
+- Buyer and seller see an order; anyone else gets 404.
+- After anything that changes stock or order counts, call
+  `listings.invalidateCache()`.
+- Editing a listing matches items by id. An item that people have ordered is
+  never deleted, only set `is_active = false`.
+
+## Payments
+
+`buildVietQrPayload` builds the text of a VietQR code for one order (bank,
+account, exact amount, order code as content). Its output was checked to be
+identical to the public VietQR generator's. Nothing is sent to a bank or a
+payment provider: the seller confirms payment by hand after checking their
+statement for the order code.
 
 ## Search
 

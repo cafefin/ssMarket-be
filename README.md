@@ -37,6 +37,11 @@ pnpm test:cov    # everything, fails under 80% coverage
   an order deadline and a delivery date.
 - Search that matches Vietnamese text typed with or without diacritics, built
   on PostgreSQL full-text search.
+- Orders with stock reserved atomically (no overselling under concurrent
+  buyers), idempotent order placement, and independent payment and delivery
+  states.
+- A VietQR code per order with the exact amount and the order code as the
+  transfer content; payment is confirmed manually by the seller.
 - Image uploads re-encoded to WebP with metadata removed, stored on local disk
   (`UPLOAD_DIR`) behind a storage interface.
 - Redis cache for public listing reads, invalidated by a namespace version.
