@@ -42,6 +42,10 @@ pnpm test:cov    # everything, fails under 80% coverage
   states.
 - A VietQR code per order with the exact amount and the order code as the
   transfer content; payment is confirmed manually by the seller.
+- A per-listing order summary for sellers with SQL-computed totals, bulk
+  actions and a CSV export that is safe to open in Excel.
+- Buyers can edit a pre-order until its deadline; sellers can reopen a
+  finished round as a new draft.
 - Image uploads re-encoded to WebP with metadata removed, stored on local disk
   (`UPLOAD_DIR`) behind a storage interface.
 - Redis cache for public listing reads, invalidated by a namespace version.
