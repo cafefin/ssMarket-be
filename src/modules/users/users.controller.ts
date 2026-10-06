@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, UseGuards } from '@nestjs/common';
 import {
   ApiCookieAuth,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiTags,
   ApiUnauthorizedResponse,
@@ -8,6 +9,7 @@ import {
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
+import { PublicUserDto } from './dto/public-user.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 import { UserResponseDto } from './dto/user-response.dto.js';
 import { UsersService } from './users.service.js';
@@ -38,5 +40,16 @@ export class UsersController {
     return UserResponseDto.from(
       await this.users.updateProfile(current.id, body),
     );
+  }
+
+  @Get(':id')
+  @UseGuards(JwtAuthGuard)
+  @ApiCookieAuth()
+  @ApiOkResponse({ type: PublicUserDto })
+  @ApiNotFoundResponse({ description: 'No such person' })
+  async publicProfile(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<PublicUserDto> {
+    return PublicUserDto.from(await this.users.getById(id));
   }
 }
