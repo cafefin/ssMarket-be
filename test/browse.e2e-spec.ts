@@ -30,8 +30,12 @@ const preorder = (title: string, hoursUntilDeadline: number) => ({
   description: 'Giao tận tầng',
   acceptsPrepaidQr: false,
   acceptsPayOnDelivery: true,
-  orderDeadline: new Date(Date.now() + hoursUntilDeadline * 3_600_000).toISOString(),
-  deliveryDate: new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10),
+  orderDeadline: new Date(
+    Date.now() + hoursUntilDeadline * 3_600_000,
+  ).toISOString(),
+  deliveryDate: new Date(Date.now() + 30 * 86_400_000)
+    .toISOString()
+    .slice(0, 10),
   items: [{ name: 'Cam sành', unit: 'kg', unitPrice: 35000 }],
 });
 
@@ -80,7 +84,9 @@ describe('Browse listings', () => {
     });
 
     it('is null when the listing has more than one item', async () => {
-      await createOpen(inStock('Banh ga hoac banh mi', [item('Nho', '5'), item('Lon', '3')]));
+      await createOpen(
+        inStock('Banh ga hoac banh mi', [item('Nho', '5'), item('Lon', '3')]),
+      );
       expect(await stockOf('Banh ga hoac banh mi')).toBeNull();
     });
 

@@ -7,9 +7,9 @@ describe('parseAdminEmails', () => {
   });
 
   it('splits on commas, trims and lower-cases', () => {
-    expect([...parseAdminEmails(' An@Example.com , binh@example.com,')]).toEqual(
-      ['an@example.com', 'binh@example.com'],
-    );
+    expect([
+      ...parseAdminEmails(' An@Example.com , binh@example.com,'),
+    ]).toEqual(['an@example.com', 'binh@example.com']);
   });
 
   it('rejects an entry that is not an email', () => {

@@ -181,9 +181,7 @@ describe('ssMarket API', () => {
       expect((await admin.get('/users/me').expect(200)).body.role).toBe(
         'admin',
       );
-      expect((await other.get('/users/me').expect(200)).body.role).toBe(
-        'user',
-      );
+      expect((await other.get('/users/me').expect(200)).body.role).toBe('user');
     });
   });
 
