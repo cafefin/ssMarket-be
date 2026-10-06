@@ -10,5 +10,6 @@ import { GoogleStrategy } from './strategies/google.strategy.js';
   imports: [PassportModule, UsersModule],
   controllers: [AuthController],
   providers: [AuthService, RefreshTokenStore, GoogleStrategy],
+  exports: [AuthService],
 })
 export class AuthModule {}

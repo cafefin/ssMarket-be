@@ -324,6 +324,17 @@ describe('ssMarket API', () => {
     });
   });
 
+  describe('GET /auth/dev-login', () => {
+    it('does not exist outside development', async () => {
+      const response = await request(server())
+        .get('/auth/dev-login?as=buyer')
+        .expect(404);
+
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(await countUsers()).toBe(0);
+    });
+  });
+
   describe('GET /docs-json', () => {
     it('describes the API so the frontend can generate types', async () => {
       const response = await request(server()).get('/docs-json').expect(200);

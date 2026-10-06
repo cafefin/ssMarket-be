@@ -127,6 +127,19 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 - Refresh token: opaque, 7 days, cookie `refresh_token`, stored hashed in Redis and rotated on every use.
 - The OAuth `state` value lives in the `oauth_state` cookie (`CookieStateStore`); there is no server-side session.
 
+## Development sign-in
+
+`GET /auth/dev-login?as=<name>` signs in as a made-up person
+(`<name>@dev.invalid`) without Google, so one developer can act as buyer and
+seller in two browser windows. Through the frontend it is
+`http://localhost:3000/api/auth/dev-login?as=buyer`.
+
+- It exists only when `NODE_ENV=development` **and** `DEV_LOGIN_ENABLED=true`.
+  The module is registered conditionally, so elsewhere the route is a 404.
+- The app refuses to start when `DEV_LOGIN_ENABLED=true` in production.
+- Never widen these conditions, and never add another way to obtain a session
+  without Google. Automated tests do not use this route.
+
 ## Testing
 
 - Write the test first. Unit tests sit next to the code as `*.spec.ts` and mock dependencies.
@@ -146,6 +159,7 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `ALLOWED_EMAIL_DOMAIN` | Only this email domain may sign in |
 | `JWT_ACCESS_SECRET` | At least 32 characters |
 | `UPLOAD_DIR` | Directory for uploaded images (default `./uploads`) |
+| `DEV_LOGIN_ENABLED` | `true` enables the development sign-in; development only |
 
 ## Conventions
 

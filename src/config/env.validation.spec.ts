@@ -47,4 +47,32 @@ describe('validateEnv', () => {
       'Invalid environment variables: JWT_ACCESS_SECRET',
     );
   });
+
+  describe('DEV_LOGIN_ENABLED', () => {
+    it('defaults to off', () => {
+      expect(validateEnv(valid).DEV_LOGIN_ENABLED).toBe('false');
+    });
+
+    it('accepts true in development', () => {
+      expect(
+        validateEnv({ ...valid, DEV_LOGIN_ENABLED: 'true' }).DEV_LOGIN_ENABLED,
+      ).toBe('true');
+    });
+
+    it('refuses to start in production with it on', () => {
+      expect(() =>
+        validateEnv({
+          ...valid,
+          NODE_ENV: 'production',
+          DEV_LOGIN_ENABLED: 'true',
+        }),
+      ).toThrow('DEV_LOGIN_ENABLED must not be true in production');
+    });
+
+    it('rejects anything other than true or false', () => {
+      expect(() => validateEnv({ ...valid, DEV_LOGIN_ENABLED: '1' })).toThrow(
+        'Invalid environment variables: DEV_LOGIN_ENABLED',
+      );
+    });
+  });
 });

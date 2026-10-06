@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConditionalModule, ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { CacheModule } from './cache/cache.module.js';
@@ -12,6 +12,8 @@ import { ACCESS_TOKEN_TTL_SECONDS } from './modules/auth/auth.constants.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { BanksModule } from './modules/banks/banks.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
+import { isDevLoginEnabled } from './modules/dev-login/dev-login.enabled.js';
+import { DevLoginModule } from './modules/dev-login/dev-login.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
@@ -41,6 +43,9 @@ import { RedisModule } from './redis/redis.module.js';
     AuthModule,
     ListingsModule,
     HealthModule,
+    // Registered only in development with DEV_LOGIN_ENABLED=true; otherwise
+    // the route does not exist at all.
+    ConditionalModule.registerWhen(DevLoginModule, isDevLoginEnabled),
   ],
 })
 export class AppModule {}

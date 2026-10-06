@@ -1,6 +1,7 @@
 import { plainToInstance } from 'class-transformer';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsString,
   IsUrl,
@@ -52,6 +53,13 @@ export class EnvironmentVariables {
   @MinLength(32)
   JWT_ACCESS_SECRET!: string;
 
+  /**
+   * Enables GET /auth/dev-login, a sign-in without Google for local testing.
+   * A string, not a boolean: implicit conversion would turn "false" into true.
+   */
+  @IsIn(['true', 'false'])
+  DEV_LOGIN_ENABLED: string = 'false';
+
   /** Directory where uploaded images are stored on local disk. */
   @IsString()
   @MinLength(1)
@@ -69,6 +77,13 @@ export function validateEnv(
   if (errors.length > 0) {
     const names = errors.map((error) => error.property).join(', ');
     throw new Error(`Invalid environment variables: ${names}`);
+  }
+
+  if (
+    validated.DEV_LOGIN_ENABLED === 'true' &&
+    validated.NODE_ENV === NodeEnv.Production
+  ) {
+    throw new Error('DEV_LOGIN_ENABLED must not be true in production');
   }
 
   return validated;
