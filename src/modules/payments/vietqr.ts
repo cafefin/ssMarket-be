@@ -23,8 +23,8 @@ export function buildVietQrPayload(input: VietQrInput): string {
   if (!/^\d{6}$/.test(input.bankBin)) {
     throw new Error('bankBin must be 6 digits');
   }
-  if (!/^[A-Za-z0-9]{1,19}$/.test(input.accountNumber)) {
-    throw new Error('accountNumber must be 1-19 letters or digits');
+  if (!/^[A-Za-z0-9]{1,24}$/.test(input.accountNumber)) {
+    throw new Error('accountNumber must be 1-24 letters or digits');
   }
   if (!Number.isInteger(input.amount) || input.amount <= 0) {
     throw new Error('amount must be a positive whole number of VND');

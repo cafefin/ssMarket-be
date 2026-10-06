@@ -49,6 +49,7 @@ function stored(overrides: Partial<Listing> = {}): Listing {
     acceptsPayOnDelivery: true,
     orderDeadline: null,
     deliveryDate: null,
+    items: [{ id: 'item-1' }],
     ...overrides,
   });
 }
@@ -202,6 +203,37 @@ describe('ListingsService', () => {
       await expect(
         codeOf(service.update(SELLER, 'listing-1', input())),
       ).resolves.toBe('INVALID_LISTING_STATE');
+    });
+
+    it('keeps the ids of existing items and rejects ids of other listings', async () => {
+      const withId = input();
+      withId.items[0].id = 'item-1';
+
+      await service.update(SELLER, 'listing-1', withId);
+
+      expect(repository.update).toHaveBeenCalledWith(
+        'listing-1',
+        expect.anything(),
+        [
+          expect.objectContaining({ id: 'item-1', name: 'Loa JBL' }),
+          expect.not.objectContaining({ id: expect.anything() }),
+        ],
+      );
+
+      withId.items[1].id = 'item-of-another-listing';
+      await expect(service.update(SELLER, 'listing-1', withId)).rejects.toThrow(
+        'An item id does not belong to this listing',
+      );
+    });
+
+    it('ignores item ids when creating a listing', async () => {
+      const withId = input();
+      withId.items[0].id = 'chosen-by-the-client';
+
+      await service.create(SELLER, withId);
+
+      const [, items] = repository.insert.mock.calls[0] as [unknown, object[]];
+      expect(items[0]).not.toHaveProperty('id');
     });
 
     it('refuses to change the mode', async () => {

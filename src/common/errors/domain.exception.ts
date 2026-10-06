@@ -6,6 +6,8 @@ export class DomainException extends HttpException {
     status: number,
     readonly code: string,
     message: string,
+    /** Structured data the frontend needs to react, e.g. which items ran out. */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message, status);
   }

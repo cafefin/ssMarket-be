@@ -9,6 +9,7 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   ValidateNested,
@@ -20,6 +21,15 @@ import { LISTING_UNITS, ListingMode } from '../listings.constants.js';
 // validateListingInput so they are tested without HTTP.
 
 export class ListingItemInputDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'When editing: the id of an existing item to keep. Omit for a new item.',
+  })
+  @IsOptional()
+  @IsUUID()
+  id?: string;
+
   @ApiProperty({ example: 'Cam sành' })
   @IsString()
   @MaxLength(500)
@@ -115,6 +125,7 @@ export class ListingInputDto {
       orderDeadline: this.orderDeadline ? new Date(this.orderDeadline) : null,
       deliveryDate: this.deliveryDate ?? null,
       items: this.items.map((item) => ({
+        id: item.id,
         name: item.name,
         unit: item.unit,
         unitPrice: item.unitPrice,

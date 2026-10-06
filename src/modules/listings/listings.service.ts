@@ -75,7 +75,8 @@ export class ListingsService {
         closedAt: null,
         ...this.editableFields(input),
       },
-      this.itemFields(input),
+      // A new listing has no existing items; ids sent by the client are ignored.
+      this.itemFields(input, { keepIds: false }),
     );
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -95,11 +96,17 @@ export class ListingsService {
       throw new BadRequestException('The mode of a listing cannot be changed');
     }
     await this.assertValid(sellerId, input);
+    const own = new Set(listing.items.map((item) => item.id));
+    if (input.items.some((item) => item.id && !own.has(item.id))) {
+      throw new BadRequestException(
+        'An item id does not belong to this listing',
+      );
+    }
 
     await this.listings.update(
       id,
       this.editableFields(input),
-      this.itemFields(input),
+      this.itemFields(input, { keepIds: true }),
     );
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -384,8 +391,12 @@ export class ListingsService {
     };
   }
 
-  private itemFields(input: ListingInput): ListingItemFields[] {
+  private itemFields(
+    input: ListingInput,
+    options: { keepIds: boolean },
+  ): ListingItemFields[] {
     return input.items.map((item, index) => ({
+      ...(options.keepIds && item.id ? { id: item.id } : {}),
       name: item.name.trim(),
       unit: item.unit,
       unitPrice: item.unitPrice,

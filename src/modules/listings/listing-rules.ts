@@ -8,6 +8,8 @@ import {
 } from './listings.constants.js';
 
 export interface ListingItemInput {
+  /** Set when editing to keep an existing item; absent for a new one. */
+  id?: string;
   name: string;
   unit: string;
   /** Integer VND. */

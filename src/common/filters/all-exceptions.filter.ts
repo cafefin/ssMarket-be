@@ -13,6 +13,7 @@ interface ErrorBody {
   statusCode: number;
   code: string;
   message: string;
+  details?: Record<string, unknown>;
 }
 
 @Catch()
@@ -52,6 +53,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         statusCode: exception.getStatus(),
         code: exception.code,
         message: exception.message,
+        ...(exception.details ? { details: exception.details } : {}),
       };
     }
 

@@ -63,6 +63,24 @@ describe('AllExceptionsFilter', () => {
     );
   });
 
+  it('includes the details of a DomainException when it has any', () => {
+    const { host, json } = hostFor('/orders');
+
+    filter.catch(
+      new DomainException(409, 'OUT_OF_STOCK', 'Not enough stock', {
+        items: [{ itemId: 'i1', available: '0' }],
+      }),
+      host,
+    );
+
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'OUT_OF_STOCK',
+        details: { items: [{ itemId: 'i1', available: '0' }] },
+      }),
+    );
+  });
+
   it('reports validation errors as VALIDATION_FAILED with joined messages', () => {
     const { host, json } = hostFor('/items');
 

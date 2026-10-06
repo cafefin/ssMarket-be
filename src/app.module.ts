@@ -16,6 +16,7 @@ import { isDevLoginEnabled } from './modules/dev-login/dev-login.enabled.js';
 import { DevLoginModule } from './modules/dev-login/dev-login.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
+import { OrdersModule } from './modules/orders/orders.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { RedisModule } from './redis/redis.module.js';
@@ -42,6 +43,7 @@ import { RedisModule } from './redis/redis.module.js';
     UsersModule,
     AuthModule,
     ListingsModule,
+    OrdersModule,
     HealthModule,
     // Registered only in development with DEV_LOGIN_ENABLED=true; otherwise
     // the route does not exist at all.

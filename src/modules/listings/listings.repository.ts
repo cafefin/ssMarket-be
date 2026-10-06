@@ -25,6 +25,8 @@ export interface ListingFields {
 }
 
 export interface ListingItemFields {
+  /** Present to update that item in place; absent to insert a new one. */
+  id?: string;
   name: string;
   unit: string;
   unitPrice: number;
@@ -102,8 +104,11 @@ export class ListingsRepository {
   }
 
   /**
-   * Updates scalar columns and, when `items` is given, replaces the whole
-   * item list, in one transaction.
+   * Updates scalar columns and, when `items` is given, makes the item list
+   * match it, in one transaction: items with an id are updated in place (so
+   * orders that reference them stay valid), items without an id are
+   * inserted, and items left out are deleted, or only deactivated when
+   * someone has already ordered them.
    */
   async update(
     id: string,
@@ -112,12 +117,43 @@ export class ListingsRepository {
   ): Promise<void> {
     await this.repository.manager.transaction(async (manager) => {
       await manager.update(Listing, { id }, fields);
-      if (items) {
-        await manager.delete(ListingItem, { listingId: id });
-        await manager.insert(
-          ListingItem,
-          items.map((item) => ({ ...item, listingId: id })),
+      if (!items) {
+        return;
+      }
+
+      const kept = new Set(items.flatMap((item) => (item.id ? [item.id] : [])));
+      const existing = await manager.find(ListingItem, {
+        where: { listingId: id },
+      });
+      for (const item of existing.filter(
+        (candidate) => !kept.has(candidate.id),
+      )) {
+        const ordered: unknown[] = await manager.query(
+          `SELECT 1 FROM order_lines WHERE listing_item_id = $1 LIMIT 1`,
+          [item.id],
         );
+        if (ordered.length > 0) {
+          await manager.update(
+            ListingItem,
+            { id: item.id },
+            { isActive: false },
+          );
+        } else {
+          await manager.delete(ListingItem, { id: item.id });
+        }
+      }
+
+      for (const item of items) {
+        if (item.id) {
+          const { id: itemId, ...values } = item;
+          await manager.update(
+            ListingItem,
+            { id: itemId, listingId: id },
+            { ...values, isActive: true },
+          );
+        } else {
+          await manager.insert(ListingItem, { ...item, listingId: id });
+        }
       }
     });
   }
