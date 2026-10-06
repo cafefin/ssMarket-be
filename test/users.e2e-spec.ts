@@ -31,6 +31,30 @@ describe('Users API', () => {
     await app.close();
   });
 
+  describe('locale', () => {
+    it('defaults to Vietnamese and can be changed', async () => {
+      expect((await buyer.get('/users/me').expect(200)).body.locale).toBe('vi');
+
+      const updated = await buyer
+        .patch('/users/me')
+        .send({ locale: 'en' })
+        .expect(200);
+
+      expect(updated.body.locale).toBe('en');
+      expect((await buyer.get('/users/me').expect(200)).body.locale).toBe('en');
+    });
+
+    it('rejects a language the app does not have', async () => {
+      await buyer.patch('/users/me').send({ locale: 'fr' }).expect(400);
+    });
+
+    it('survives signing in again', async () => {
+      await buyer.patch('/users/me').send({ locale: 'en' }).expect(200);
+      const again = await signIn(app, identity, 'buyer');
+      expect((await again.get('/users/me').expect(200)).body.locale).toBe('en');
+    });
+  });
+
   describe('GET /users/:id', () => {
     it('shows another person only their public profile', async () => {
       await seller
@@ -55,7 +79,9 @@ describe('Users API', () => {
     });
 
     it('answers 404 for nobody and 400 for a malformed id', async () => {
-      await buyer.get('/users/0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11').expect(404);
+      await buyer
+        .get('/users/0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11')
+        .expect(404);
       await buyer.get('/users/abc').expect(400);
     });
 

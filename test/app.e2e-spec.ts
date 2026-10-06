@@ -164,6 +164,7 @@ describe('ssMarket API', () => {
         name: 'An Nguyen',
         avatarUrl: 'https://img.example.com/a.png',
         role: 'user',
+        locale: 'vi',
         deliveryLocation: null,
         bankBin: null,
         bankAccountNumber: null,

@@ -4,6 +4,7 @@ import {
   PaymentMethod,
   PaymentStatus,
 } from './orders.constants.js';
+import { UserLocale } from '../users/user.entity.js';
 import { buildSummaryCsv } from './summary-csv.js';
 
 const row = (overrides: Partial<SummaryRowDto> = {}): SummaryRowDto => ({
@@ -134,5 +135,31 @@ describe('buildSummaryCsv', () => {
 
     expect(lines).toHaveLength(4);
     expect(lines[1]).toBe('Tổng,0 đơn,,,0,0,0,,,,,');
+  });
+
+  describe('in English', () => {
+    const lines = linesOf(buildSummaryCsv(summary(), UserLocale.En));
+
+    it('translates the header', () => {
+      expect(lines[0]).toBe(
+        'Order code,Buyer,Email,Deliver to,Cam sành (kg),Bưởi (kg),Total,Method,Payment,Delivery,Note,Ordered at',
+      );
+    });
+
+    it('translates the status labels and leaves data as it is', () => {
+      expect(lines[1]).toBe(
+        'SSM7K2Q9X,Anh Minh,minh@example.com,Tầng 7,1.5,2,192500,QR transfer,Paid,Pending,,2026-10-06 10:05',
+      );
+    });
+
+    it('translates the totals', () => {
+      expect(lines.slice(2).map((line) => line.split(',').slice(0, 2))).toEqual(
+        [
+          ['Total', '1 orders'],
+          ['Collected', ''],
+          ['Outstanding', ''],
+        ],
+      );
+    });
   });
 });

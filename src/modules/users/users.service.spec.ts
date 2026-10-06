@@ -3,7 +3,7 @@ import type { ConfigService } from '@nestjs/config';
 import type { Mocked } from 'vitest';
 import type { EnvironmentVariables } from '../../config/env.validation.js';
 import { BanksService } from '../banks/banks.service.js';
-import { User, UserRole } from './user.entity.js';
+import { User, UserLocale, UserRole } from './user.entity.js';
 import type { UsersRepository } from './users.repository.js';
 import { type GoogleProfile, UsersService } from './users.service.js';
 
@@ -15,6 +15,7 @@ function buildUser(overrides: Partial<User> = {}): User {
     avatarUrl: null,
     googleId: 'google-1',
     role: UserRole.User,
+    locale: UserLocale.Vi,
     deliveryLocation: null,
     bankBin: null,
     bankAccountNumber: null,
@@ -134,6 +135,23 @@ describe('UsersService', () => {
   });
 
   describe('updateProfile', () => {
+    it('changes the language and leaves it alone when absent', async () => {
+      repository.findById.mockResolvedValue(buildUser());
+
+      expect(
+        (await service.updateProfile('user-1', { locale: UserLocale.En }))
+          .locale,
+      ).toBe('en');
+
+      repository.findById.mockResolvedValue(
+        buildUser({ locale: UserLocale.En }),
+      );
+      expect(
+        (await service.updateProfile('user-1', { deliveryLocation: 'Tầng 3' }))
+          .locale,
+      ).toBe('en');
+    });
+
     const bank = {
       bankBin: '970436',
       bankAccountNumber: '0123456789',

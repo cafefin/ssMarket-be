@@ -8,7 +8,7 @@ import { parseAdminEmails } from '../../config/admin-emails.js';
 import type { EnvironmentVariables } from '../../config/env.validation.js';
 import { stripDiacritics } from '../../common/text/normalize.js';
 import { BanksService } from '../banks/banks.service.js';
-import { type User, UserRole } from './user.entity.js';
+import { type User, type UserLocale, UserRole } from './user.entity.js';
 import { UsersRepository } from './users.repository.js';
 
 export interface GoogleProfile {
@@ -24,6 +24,7 @@ export interface UpdateProfileInput {
   bankBin?: string | null;
   bankAccountNumber?: string | null;
   bankAccountName?: string | null;
+  locale?: UserLocale;
 }
 
 @Injectable()
@@ -80,6 +81,10 @@ export class UsersService {
 
     if (input.deliveryLocation !== undefined) {
       user.deliveryLocation = input.deliveryLocation?.trim() || null;
+    }
+    // null is ignored: a person always has a language.
+    if (input.locale) {
+      user.locale = input.locale;
     }
     this.applyBankDetails(user, input);
 

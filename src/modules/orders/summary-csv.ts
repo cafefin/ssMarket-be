@@ -5,20 +5,79 @@ import {
   PaymentMethod,
   PaymentStatus,
 } from './orders.constants.js';
+import { UserLocale } from '../users/user.entity.js';
 
-const PAYMENT_METHOD: Record<PaymentMethod, string> = {
-  [PaymentMethod.PrepaidQr]: 'Chuyển khoản QR',
-  [PaymentMethod.PayOnDelivery]: 'Trả khi nhận',
-};
-const PAYMENT_STATUS: Record<PaymentStatus, string> = {
-  [PaymentStatus.Unpaid]: 'Chưa thanh toán',
-  [PaymentStatus.Reported]: 'Chờ xác nhận',
-  [PaymentStatus.Paid]: 'Đã thanh toán',
-};
-const FULFILLMENT_STATUS: Record<FulfillmentStatus, string> = {
-  [FulfillmentStatus.Pending]: 'Chờ giao',
-  [FulfillmentStatus.Delivered]: 'Đã giao',
-  [FulfillmentStatus.Cancelled]: 'Đã hủy',
+interface CsvLabels {
+  headBeforeItems: [string, string, string, string];
+  headAfterItems: [string, string, string, string, string, string];
+  paymentMethod: Record<PaymentMethod, string>;
+  paymentStatus: Record<PaymentStatus, string>;
+  fulfillmentStatus: Record<FulfillmentStatus, string>;
+  total: string;
+  orders: (count: number) => string;
+  collected: string;
+  outstanding: string;
+}
+
+const LABELS: Record<UserLocale, CsvLabels> = {
+  [UserLocale.Vi]: {
+    headBeforeItems: ['Mã đơn', 'Người mua', 'Email', 'Nơi giao'],
+    headAfterItems: [
+      'Tổng tiền',
+      'Hình thức',
+      'Thanh toán',
+      'Giao hàng',
+      'Ghi chú',
+      'Thời điểm đặt',
+    ],
+    paymentMethod: {
+      [PaymentMethod.PrepaidQr]: 'Chuyển khoản QR',
+      [PaymentMethod.PayOnDelivery]: 'Trả khi nhận',
+    },
+    paymentStatus: {
+      [PaymentStatus.Unpaid]: 'Chưa thanh toán',
+      [PaymentStatus.Reported]: 'Chờ xác nhận',
+      [PaymentStatus.Paid]: 'Đã thanh toán',
+    },
+    fulfillmentStatus: {
+      [FulfillmentStatus.Pending]: 'Chờ giao',
+      [FulfillmentStatus.Delivered]: 'Đã giao',
+      [FulfillmentStatus.Cancelled]: 'Đã hủy',
+    },
+    total: 'Tổng',
+    orders: (count) => `${count} đơn`,
+    collected: 'Đã thu',
+    outstanding: 'Còn phải thu',
+  },
+  [UserLocale.En]: {
+    headBeforeItems: ['Order code', 'Buyer', 'Email', 'Deliver to'],
+    headAfterItems: [
+      'Total',
+      'Method',
+      'Payment',
+      'Delivery',
+      'Note',
+      'Ordered at',
+    ],
+    paymentMethod: {
+      [PaymentMethod.PrepaidQr]: 'QR transfer',
+      [PaymentMethod.PayOnDelivery]: 'Pay on delivery',
+    },
+    paymentStatus: {
+      [PaymentStatus.Unpaid]: 'Unpaid',
+      [PaymentStatus.Reported]: 'Awaiting confirmation',
+      [PaymentStatus.Paid]: 'Paid',
+    },
+    fulfillmentStatus: {
+      [FulfillmentStatus.Pending]: 'Pending',
+      [FulfillmentStatus.Delivered]: 'Delivered',
+      [FulfillmentStatus.Cancelled]: 'Cancelled',
+    },
+    total: 'Total',
+    orders: (count) => `${count} orders`,
+    collected: 'Collected',
+    outstanding: 'Outstanding',
+  },
 };
 
 /**
@@ -56,22 +115,18 @@ function localDateTime(iso: string): string {
  * The seller summary as a CSV file that Excel opens directly: UTF-8 with a
  * byte-order mark (so Vietnamese shows correctly) and CRLF line endings.
  */
-export function buildSummaryCsv(summary: SalesSummaryDto): string {
+export function buildSummaryCsv(
+  summary: SalesSummaryDto,
+  locale: UserLocale = UserLocale.Vi,
+): string {
+  const labels = LABELS[locale];
   const { items, rows, totals } = summary;
   const lines: (string | number | null)[][] = [];
 
   lines.push([
-    'Mã đơn',
-    'Người mua',
-    'Email',
-    'Nơi giao',
+    ...labels.headBeforeItems,
     ...items.map((item) => `${item.name} (${item.unit})`),
-    'Tổng tiền',
-    'Hình thức',
-    'Thanh toán',
-    'Giao hàng',
-    'Ghi chú',
-    'Thời điểm đặt',
+    ...labels.headAfterItems,
   ]);
   for (const row of rows) {
     lines.push([
@@ -81,9 +136,9 @@ export function buildSummaryCsv(summary: SalesSummaryDto): string {
       row.deliveryLocation,
       ...items.map((item) => row.quantities[item.id] ?? null),
       row.totalAmount,
-      PAYMENT_METHOD[row.paymentMethod],
-      PAYMENT_STATUS[row.paymentStatus],
-      FULFILLMENT_STATUS[row.fulfillmentStatus],
+      labels.paymentMethod[row.paymentMethod],
+      labels.paymentStatus[row.paymentStatus],
+      labels.fulfillmentStatus[row.fulfillmentStatus],
       row.note,
       localDateTime(row.createdAt),
     ]);
@@ -92,8 +147,8 @@ export function buildSummaryCsv(summary: SalesSummaryDto): string {
   const blank = items.map(() => null);
   const tail = [null, null, null, null, null];
   lines.push([
-    'Tổng',
-    `${totals.orderCount} đơn`,
+    labels.total,
+    labels.orders(totals.orderCount),
     null,
     null,
     ...items.map((item) => totals.quantities[item.id] ?? 0),
@@ -101,7 +156,7 @@ export function buildSummaryCsv(summary: SalesSummaryDto): string {
     ...tail,
   ]);
   lines.push([
-    'Đã thu',
+    labels.collected,
     null,
     null,
     null,
@@ -110,7 +165,7 @@ export function buildSummaryCsv(summary: SalesSummaryDto): string {
     ...tail,
   ]);
   lines.push([
-    'Còn phải thu',
+    labels.outstanding,
     null,
     null,
     null,

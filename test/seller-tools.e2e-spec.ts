@@ -319,6 +319,29 @@ describe('Seller tools: summary, order editing, reopening', () => {
     });
   });
 
+  describe('GET /listings/:id/summary.csv in English', () => {
+    it('uses the language stored on the seller', async () => {
+      await order(minh, [['Cam ngọt', '1']]);
+      await seller.patch('/users/me').send({ locale: 'en' }).expect(200);
+
+      const response = await seller
+        .get(`/listings/${round.id}/summary.csv`)
+        .buffer(true)
+        .parse((res, done) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => done(null, Buffer.concat(chunks)));
+        })
+        .expect(200);
+
+      const first = (response.body as Buffer)
+        .toString('utf8')
+        .replace(/^﻿/, '')
+        .split('\r\n')[0];
+      expect(first.startsWith('Order code,Buyer,Email,Deliver to')).toBe(true);
+    });
+  });
+
   describe('POST /listings/:id/orders/bulk', () => {
     it('applies the action to each order and reports the ones it could not', async () => {
       const a = await order(minh, [['Cam ngọt', '1']]);

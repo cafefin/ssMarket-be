@@ -1,11 +1,13 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsEnum,
   IsOptional,
   IsString,
   Length,
   Matches,
   MaxLength,
 } from 'class-validator';
+import { UserLocale } from '../user.entity.js';
 
 /**
  * A field that is absent is left unchanged; a field sent as null is cleared.
@@ -37,4 +39,9 @@ export class UpdateProfileDto {
   @IsString()
   @Length(2, 120)
   bankAccountName?: string | null;
+
+  @ApiPropertyOptional({ enum: UserLocale, enumName: 'UserLocale' })
+  @IsOptional()
+  @IsEnum(UserLocale)
+  locale?: UserLocale;
 }
