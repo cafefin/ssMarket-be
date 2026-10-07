@@ -30,6 +30,7 @@ import {
 import type { Listing } from './listing.entity.js';
 import {
   CONDITION_PERCENT,
+  type ListingCondition,
   LISTINGS_CACHE_NAMESPACE,
   LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
@@ -53,6 +54,9 @@ export interface ListingSearchParams {
   mode?: ListingMode;
   sort?: ListingSort;
   seller?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  minCondition?: ListingCondition;
   cursor?: string;
   limit?: number;
 }
@@ -252,6 +256,13 @@ export class ListingsService {
       );
     }
 
+    if (
+      params.minPrice !== undefined &&
+      params.maxPrice !== undefined &&
+      params.minPrice > params.maxPrice
+    ) {
+      throw new BadRequestException('minPrice cannot be above maxPrice');
+    }
     const cursor = params.cursor ? decodeCursor(params.cursor) : null;
     const expectedKind: ListingCursor['kind'] =
       sort === ListingSort.Deadline
@@ -273,6 +284,11 @@ export class ListingsService {
     }
     const mode = params.mode ?? null;
     const sellerId = params.seller ?? null;
+    const minPrice = params.minPrice ?? null;
+    const maxPrice = params.maxPrice ?? null;
+    const minConditionPercent = params.minCondition
+      ? CONDITION_PERCENT[params.minCondition]
+      : null;
 
     const fingerprint = createHash('sha256')
       .update(
@@ -284,6 +300,9 @@ export class ListingsService {
           limit,
           sort,
           sellerId,
+          minPrice,
+          maxPrice,
+          minConditionPercent,
         ]),
       )
       .digest('hex');
@@ -299,6 +318,9 @@ export class ListingsService {
           mode,
           sort,
           sellerId,
+          minPrice,
+          maxPrice,
+          minConditionPercent,
           cursor,
           limit: limit + 1,
           now: new Date(),

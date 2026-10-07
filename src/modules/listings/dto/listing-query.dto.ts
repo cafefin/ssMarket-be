@@ -6,9 +6,15 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
-import { ListingMode, ListingSort } from '../listings.constants.js';
+import {
+  ListingCondition,
+  ListingMode,
+  ListingSort,
+} from '../listings.constants.js';
 
 export class ListingQueryDto {
   @ApiPropertyOptional({ description: 'Keywords, with or without diacritics' })
@@ -44,6 +50,37 @@ export class ListingQueryDto {
   @IsOptional()
   @IsUUID()
   seller?: string;
+
+  @ApiPropertyOptional({
+    description: 'Lowest unit price of the listing at least this, integer VND',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000_000)
+  minPrice?: number;
+
+  @ApiPropertyOptional({
+    description: 'Lowest unit price of the listing at most this, integer VND',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000_000)
+  maxPrice?: number;
+
+  @ApiPropertyOptional({
+    enum: ListingCondition,
+    enumName: 'ListingCondition',
+    description:
+      'Only second-hand goods at least this good; leaves out pre-orders, food ' +
+      'and listings without a condition',
+  })
+  @IsOptional()
+  @IsEnum(ListingCondition)
+  minCondition?: ListingCondition;
 
   @ApiPropertyOptional()
   @IsOptional()

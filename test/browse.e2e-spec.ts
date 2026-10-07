@@ -187,4 +187,53 @@ describe('Browse listings', () => {
       await buyer.get('/listings?seller=abc').expect(400);
     });
   });
+
+  describe('price and condition filters', () => {
+    const gadget = (title: string, unitPrice: number, condition: string) => ({
+      mode: 'in_stock',
+      condition,
+      title,
+      categoryId: 4,
+      description: '',
+      acceptsPrepaidQr: false,
+      acceptsPayOnDelivery: true,
+      items: [{ name: title, unit: 'cái', unitPrice, stockQuantity: '1' }],
+    });
+    const titles = async (query: string): Promise<string[]> => {
+      const page = await buyer.get(`/listings?${query}`).expect(200);
+      return page.body.items.map((l: { title: string }) => l.title).sort();
+    };
+
+    beforeEach(async () => {
+      await createOpen(gadget('Chuột rẻ', 50000, 'fair'));
+      await createOpen(gadget('Bàn phím', 300000, 'like_new'));
+      await createOpen(gadget('Màn hình', 2000000, 'good'));
+      await createOpen(preorder('Hoa quả', 48));
+    });
+
+    it('keeps listings whose cheapest option is inside the price range', async () => {
+      expect(await titles('minPrice=100000&maxPrice=1000000')).toEqual([
+        'Bàn phím',
+      ]);
+      expect(await titles('maxPrice=40000')).toEqual(['Hoa quả']);
+    });
+
+    it('keeps second-hand goods at least as good as asked', async () => {
+      expect(await titles('minCondition=good')).toEqual([
+        'Bàn phím',
+        'Màn hình',
+      ]);
+      expect(await titles('minCondition=worn')).toEqual([
+        'Bàn phím',
+        'Chuột rẻ',
+        'Màn hình',
+      ]);
+    });
+
+    it('rejects a range that ends before it starts and unknown levels', async () => {
+      await buyer.get('/listings?minPrice=10&maxPrice=5').expect(400);
+      await buyer.get('/listings?minCondition=shiny').expect(400);
+      await buyer.get('/listings?minPrice=-1').expect(400);
+    });
+  });
 });

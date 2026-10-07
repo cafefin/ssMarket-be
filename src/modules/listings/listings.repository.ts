@@ -50,6 +50,11 @@ export interface OpenListingSearch {
   mode: ListingMode | null;
   sort: ListingSort;
   sellerId: string | null;
+  /** Bounds on the cheapest option's unit price, integer VND. */
+  minPrice: number | null;
+  maxPrice: number | null;
+  /** Keep only listings whose condition is at least this percentage. */
+  minConditionPercent: number | null;
   cursor: ListingCursor | null;
   limit: number;
   now: Date;
@@ -202,6 +207,15 @@ export class ListingsRepository {
 
     if (search.sellerId !== null) {
       where.push(`l.seller_id = ${bind(search.sellerId)}::uuid`);
+    }
+    if (search.minPrice !== null) {
+      where.push(`cheapest.unit_price >= ${bind(search.minPrice)}`);
+    }
+    if (search.maxPrice !== null) {
+      where.push(`cheapest.unit_price <= ${bind(search.maxPrice)}`);
+    }
+    if (search.minConditionPercent !== null) {
+      where.push(`l.condition_percent >= ${bind(search.minConditionPercent)}`);
     }
 
     let orderBy = ['l.published_at DESC', 'l.id DESC'];
