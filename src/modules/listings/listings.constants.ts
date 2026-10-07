@@ -40,6 +40,7 @@ export const LISTING_LIMITS = {
   itemsMin: 1,
   itemsMax: 10,
   itemNameMax: 120,
+  combosMax: 3,
   unitPriceMin: 1_000,
   unitPriceMax: 1_000_000_000,
   imagesMax: 5,

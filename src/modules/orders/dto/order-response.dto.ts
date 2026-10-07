@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { ComboDto } from '../../listings/dto/listing-response.dto.js';
 import type { User } from '../../users/user.entity.js';
 import type { OrderLine } from '../order-line.entity.js';
 import type { Order } from '../order.entity.js';
@@ -56,8 +57,20 @@ export class OrderLineDto {
   @ApiProperty()
   quantity!: number;
 
-  @ApiProperty({ description: 'Integer VND' })
+  @ApiProperty({ description: 'Integer VND, after combos' })
   lineTotal!: number;
+
+  @ApiProperty({
+    description:
+      'unit price × quantity before combos; equals lineTotal without them',
+  })
+  listTotal!: number;
+
+  @ApiProperty({
+    type: [ComboDto],
+    description: 'The combos the line was priced with',
+  })
+  combos!: ComboDto[];
 
   static from(line: OrderLine): OrderLineDto {
     const dto = new OrderLineDto();
@@ -67,6 +80,8 @@ export class OrderLineDto {
     dto.unitPrice = line.unitPrice;
     dto.quantity = Number(line.quantity);
     dto.lineTotal = line.lineTotal;
+    dto.listTotal = line.listTotal;
+    dto.combos = line.combos;
     return dto;
   }
 }

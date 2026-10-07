@@ -7,6 +7,7 @@ import {
   ListingMode,
   ListingStatus,
 } from './listings.constants.js';
+import { type Combo, lineTotal, toThousandths } from './pricing.js';
 
 export interface ListingItemInput {
   /** Set when editing to keep an existing item; absent for a new one. */
@@ -17,6 +18,8 @@ export interface ListingItemInput {
   unitPrice: number;
   /** Decimal string with up to 3 fraction digits; null means unlimited. */
   stockQuantity: string | null;
+  /** "N units for a set price"; at most three. */
+  combos: Combo[];
 }
 
 export interface ListingInput {
@@ -87,6 +90,8 @@ function itemProblems(
     );
   }
 
+  problems.push(...comboProblems(item, label));
+
   if (mode === ListingMode.Preorder) {
     if (item.stockQuantity !== null) {
       problems.push(`${label}: pre-order items do not have stock`);
@@ -112,6 +117,47 @@ function itemProblems(
     );
   }
 
+  return problems;
+}
+
+function comboProblems(item: ListingItemInput, label: string): string[] {
+  const problems: string[] = [];
+  if (item.combos.length > LISTING_LIMITS.combosMax) {
+    problems.push(`${label}: at most ${LISTING_LIMITS.combosMax} combos`);
+  }
+  // Pieces are sold whole; kg in steps of 0.1.
+  const step = item.unit === FRACTIONAL_UNIT ? 100 : 1000;
+  const sizes = new Set<number>();
+  item.combos.forEach((combo, index) => {
+    const name = `${label}, combo ${index + 1}`;
+    const size = toThousandths(combo.quantity);
+    if (size === null || size <= step || size % step !== 0) {
+      problems.push(
+        `${name}: quantity must be more than one ${item.unit === FRACTIONAL_UNIT ? '0.1 kg step' : 'unit'} and a multiple of it`,
+      );
+      return;
+    }
+    if (sizes.has(size)) {
+      problems.push(`${name}: another combo has the same quantity`);
+    }
+    sizes.add(size);
+    if (
+      !Number.isInteger(combo.price) ||
+      combo.price < LISTING_LIMITS.unitPriceMin ||
+      combo.price > LISTING_LIMITS.unitPriceMax
+    ) {
+      problems.push(
+        `${name}: price must be a whole number from ${LISTING_LIMITS.unitPriceMin} to ${LISTING_LIMITS.unitPriceMax}`,
+      );
+    } else if (
+      Number.isInteger(item.unitPrice) &&
+      combo.price >= lineTotal(item.unitPrice, combo.quantity)
+    ) {
+      problems.push(
+        `${name}: must cost less than buying the same quantity singly`,
+      );
+    }
+  });
   return problems;
 }
 
@@ -179,7 +225,9 @@ export function validateListingInput(
   if (needsCondition && input.condition === null) {
     problems.push('in-stock goods need a condition');
   } else if (!needsCondition && input.condition !== null) {
-    problems.push('only in-stock goods outside food categories have a condition');
+    problems.push(
+      'only in-stock goods outside food categories have a condition',
+    );
   }
 
   input.items.forEach((item, index) => {

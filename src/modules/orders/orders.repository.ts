@@ -35,6 +35,8 @@ export interface NewOrderLine {
   unitPrice: number;
   quantity: string;
   lineTotal: number;
+  listTotal: number;
+  combos: { quantity: string; price: number }[];
   sortOrder: number;
 }
 

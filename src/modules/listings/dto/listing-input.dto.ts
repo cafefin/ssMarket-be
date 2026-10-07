@@ -24,6 +24,20 @@ import {
 // These classes check shape and types only. Business rules live in
 // validateListingInput so they are tested without HTTP.
 
+export class ComboInputDto {
+  @ApiProperty({ description: 'Decimal string', example: '100' })
+  @IsString()
+  @MaxLength(16)
+  quantity!: string;
+
+  @ApiProperty({
+    description: 'Price of the whole combo, integer VND',
+    example: 900000,
+  })
+  @IsInt()
+  price!: number;
+}
+
 export class ListingItemInputDto {
   @ApiPropertyOptional({
     format: 'uuid',
@@ -59,6 +73,17 @@ export class ListingItemInputDto {
   @IsString()
   @MaxLength(16)
   stockQuantity?: string | null;
+
+  @ApiPropertyOptional({
+    type: [ComboInputDto],
+    description: '"N units for a set price"; at most 3',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => ComboInputDto)
+  combos?: ComboInputDto[];
 }
 
 export class ListingInputDto {
@@ -146,6 +171,10 @@ export class ListingInputDto {
         unit: item.unit,
         unitPrice: item.unitPrice,
         stockQuantity: item.stockQuantity ?? null,
+        combos: (item.combos ?? []).map((combo) => ({
+          quantity: combo.quantity,
+          price: combo.price,
+        })),
       })),
     };
   }

@@ -7,6 +7,7 @@ import { AddCategoryAdminFields1759881600000 } from './1759881600000-add-categor
 import { AddListingDeadlineIndex1759885200000 } from './1759885200000-add-listing-deadline-index.js';
 import { AddUserLocale1759888800000 } from './1759888800000-add-user-locale.js';
 import { AddListingCondition1759971600000 } from './1759971600000-add-listing-condition.js';
+import { AddCombos1759975200000 } from './1759975200000-add-combos.js';
 
 // Ordered oldest first. Add every new migration class here.
 export const migrations = [
@@ -19,4 +20,5 @@ export const migrations = [
   AddListingDeadlineIndex1759885200000,
   AddUserLocale1759888800000,
   AddListingCondition1759971600000,
+  AddCombos1759975200000,
 ];

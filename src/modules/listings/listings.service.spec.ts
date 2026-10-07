@@ -40,8 +40,15 @@ function input(overrides: Partial<ListingInput> = {}): ListingInput {
         unit: 'cái',
         unitPrice: 500_000,
         stockQuantity: '1',
+        combos: [],
       },
-      { name: 'Dây sạc', unit: 'cái', unitPrice: 20_000, stockQuantity: '3' },
+      {
+        name: 'Dây sạc',
+        unit: 'cái',
+        unitPrice: 20_000,
+        stockQuantity: '3',
+        combos: [],
+      },
     ],
     ...overrides,
   };
@@ -126,6 +133,7 @@ describe('ListingsService', () => {
             unitPrice: 500_000,
             stockQuantity: '1',
             sortOrder: 0,
+            combos: [],
           },
           {
             name: 'Dây sạc',
@@ -133,6 +141,7 @@ describe('ListingsService', () => {
             unitPrice: 20_000,
             stockQuantity: '3',
             sortOrder: 1,
+            combos: [],
           },
         ],
       );

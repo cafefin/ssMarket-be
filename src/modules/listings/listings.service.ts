@@ -196,6 +196,10 @@ export class ListingsService {
         unitPrice: item.unitPrice,
         stockQuantity: null,
         sortOrder: index,
+        combos: (item.combos ?? []).map((combo) => ({
+          quantity: combo.quantity,
+          price: combo.price,
+        })),
       }));
     const newId = await this.listings.insert(
       {
@@ -458,6 +462,7 @@ export class ListingsService {
       minUnitPrice: row.min_unit_price,
       minPriceUnit: row.min_price_unit,
       itemCount: row.item_count,
+      hasCombos: row.has_combos,
       singleItemId: row.single_item_id,
       condition: row.condition,
       conditionPercent: row.condition_percent,
@@ -564,6 +569,7 @@ export class ListingsService {
       unitPrice: item.unitPrice,
       stockQuantity: item.stockQuantity,
       sortOrder: index,
+      combos: item.combos,
     }));
   }
 }

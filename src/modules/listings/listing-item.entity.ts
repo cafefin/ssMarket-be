@@ -3,9 +3,11 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   type Relation,
 } from 'typeorm';
+import { ListingItemCombo } from './listing-item-combo.entity.js';
 import { Listing } from './listing.entity.js';
 
 @Entity('listing_items')
@@ -49,4 +51,7 @@ export class ListingItem {
    */
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;
+
+  @OneToMany(() => ListingItemCombo, (combo) => combo.item)
+  combos!: Relation<ListingItemCombo[]>;
 }

@@ -47,6 +47,18 @@ export class OrderLine {
   })
   lineTotal!: number;
 
+  /** unit price × quantity, before combos; equals lineTotal without them. */
+  @Column({
+    name: 'list_total',
+    type: 'bigint',
+    transformer: { to: (v: number) => v, from: (v: string) => Number(v) },
+  })
+  listTotal!: number;
+
+  /** The combos the line was priced with, copied like the unit price. */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  combos!: { quantity: string; price: number }[];
+
   @Column({ name: 'sort_order', type: 'smallint' })
   sortOrder!: number;
 }

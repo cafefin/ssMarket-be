@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { type EntityManager, Repository } from 'typeorm';
 import type { Tx } from '../../database/transaction.js';
+import { ListingItemCombo } from './listing-item-combo.entity.js';
 import { ListingItem } from './listing-item.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
@@ -41,6 +42,7 @@ export interface ListingItemFields {
   unitPrice: number;
   stockQuantity: string | null;
   sortOrder: number;
+  combos: { quantity: string; price: number }[];
 }
 
 export interface OpenListingSearch {
@@ -77,6 +79,7 @@ export interface OpenListingRow {
   condition_percent: number | null;
   item_count: number;
   single_item_id: string | null;
+  has_combos: boolean;
   seller_id: string;
   seller_name: string;
   seller_avatar_url: string | null;
@@ -98,7 +101,12 @@ export class ListingsRepository {
   findByIdWithRelations(id: string): Promise<Listing | null> {
     return this.repository.findOne({
       where: { id },
-      relations: { seller: true, category: true, items: true, images: true },
+      relations: {
+        seller: true,
+        category: true,
+        items: { combos: true },
+        images: true,
+      },
       order: { items: { sortOrder: 'ASC' }, images: { sortOrder: 'ASC' } },
     });
   }
@@ -106,7 +114,12 @@ export class ListingsRepository {
   findBySeller(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.repository.find({
       where: { sellerId, ...(status ? { status } : {}) },
-      relations: { seller: true, category: true, items: true, images: true },
+      relations: {
+        seller: true,
+        category: true,
+        items: { combos: true },
+        images: true,
+      },
       order: {
         createdAt: 'DESC',
         items: { sortOrder: 'ASC' },
@@ -120,10 +133,17 @@ export class ListingsRepository {
     return this.repository.manager.transaction(async (manager) => {
       const result = await manager.insert(Listing, fields);
       const id = result.identifiers[0].id as string;
-      await manager.insert(
-        ListingItem,
-        items.map((item) => ({ ...item, listingId: id })),
-      );
+      for (const { combos, ...item } of items) {
+        const inserted = await manager.insert(ListingItem, {
+          ...item,
+          listingId: id,
+        });
+        await insertCombos(
+          manager,
+          inserted.identifiers[0].id as string,
+          combos,
+        );
+      }
       return id;
     });
   }
@@ -168,17 +188,25 @@ export class ListingsRepository {
         }
       }
 
-      for (const item of items) {
+      for (const { combos, ...item } of items) {
+        let itemId: string;
         if (item.id) {
-          const { id: itemId, ...values } = item;
+          const { id: existingId, ...values } = item;
+          itemId = existingId;
           await manager.update(
             ListingItem,
             { id: itemId, listingId: id },
             { ...values, isActive: true },
           );
+          await manager.delete(ListingItemCombo, { listingItemId: itemId });
         } else {
-          await manager.insert(ListingItem, { ...item, listingId: id });
+          const inserted = await manager.insert(ListingItem, {
+            ...item,
+            listingId: id,
+          });
+          itemId = inserted.identifiers[0].id as string;
         }
+        await insertCombos(manager, itemId, combos);
       }
     });
   }
@@ -255,6 +283,11 @@ export class ListingsRepository {
         c.name_en AS category_name_en, c.is_perishable AS category_is_perishable,
         l.condition, l.condition_percent,
         stock.item_count,
+        EXISTS (
+          SELECT 1 FROM listing_item_combos lc
+          JOIN listing_items li ON li.id = lc.listing_item_id
+          WHERE li.listing_id = l.id AND li.is_active
+        ) AS has_combos,
         CASE WHEN stock.item_count = 1 THEN stock.only_id END AS single_item_id,
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
@@ -352,6 +385,19 @@ export interface StockShortage {
   itemId: string;
   /** What is left, as a decimal string. */
   available: string;
+}
+
+async function insertCombos(
+  manager: EntityManager,
+  listingItemId: string,
+  combos: ListingItemFields['combos'],
+): Promise<void> {
+  if (combos.length > 0) {
+    await manager.insert(
+      ListingItemCombo,
+      combos.map((combo) => ({ ...combo, listingItemId })),
+    );
+  }
 }
 
 function sortedByItem(lines: ReadonlyArray<StockLine>): StockLine[] {

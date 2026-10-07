@@ -21,7 +21,12 @@ import {
 import { IdempotencyService } from './idempotency.service.js';
 import { generateOrderCode } from './order-code.js';
 import { decodeOrderCursor, encodeOrderCursor } from './order-cursor.js';
-import { lineTotal, quantityProblem } from './order-math.js';
+import {
+  type Combo,
+  lineTotal,
+  lineTotalWithCombos,
+  quantityProblem,
+} from './order-math.js';
 import {
   assertCanCancel,
   assertCanDeliver,
@@ -51,6 +56,7 @@ interface LineSnapshot {
   itemName: string;
   unit: string;
   unitPrice: number;
+  combos: Combo[];
 }
 
 export interface PlaceOrderInput {
@@ -187,6 +193,7 @@ export class OrdersService {
               itemName: line.itemName,
               unit: line.unit,
               unitPrice: line.unitPrice,
+              combos: line.combos,
             },
           ]),
         ),
@@ -417,6 +424,10 @@ export class OrdersService {
           itemName: item.name,
           unit: item.unit,
           unitPrice: item.unitPrice,
+          combos: (item.combos ?? []).map((combo) => ({
+            quantity: String(Number(combo.quantity)),
+            price: combo.price,
+          })),
         });
       }
     }
@@ -450,7 +461,13 @@ export class OrdersService {
         unit: item.unit,
         unitPrice: item.unitPrice,
         quantity: line.quantity,
-        lineTotal: lineTotal(item.unitPrice, line.quantity),
+        lineTotal: lineTotalWithCombos(
+          item.unitPrice,
+          item.combos,
+          line.quantity,
+        ),
+        listTotal: lineTotal(item.unitPrice, line.quantity),
+        combos: item.combos,
         sortOrder: index,
       });
     });

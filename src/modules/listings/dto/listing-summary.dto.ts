@@ -42,6 +42,9 @@ export class ListingSummaryDto {
   })
   stockQuantity!: number | null;
 
+  @ApiProperty({ description: 'True when some option has a combo price' })
+  hasCombos!: boolean;
+
   @ApiProperty({ description: 'Active options (items) of the listing' })
   itemCount!: number;
 
