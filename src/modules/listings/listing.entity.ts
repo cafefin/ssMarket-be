@@ -106,7 +106,7 @@ export class Listing {
   @VirtualColumn({
     type: 'int',
     query: (alias) =>
-      `(SELECT COUNT(*)::int FROM "orders" WHERE "orders"."listing_id" = ${alias}."id" AND "orders"."fulfillment_status" <> 'cancelled')`,
+      `(SELECT COUNT(DISTINCT "o"."id")::int FROM "order_lines" "ol" JOIN "orders" "o" ON "o"."id" = "ol"."order_id" WHERE "ol"."listing_id" = ${alias}."id" AND "o"."fulfillment_status" <> 'cancelled')`,
   })
   orderCount!: number;
 

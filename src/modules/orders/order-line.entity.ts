@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   type Relation,
 } from 'typeorm';
+import { Listing } from '../listings/listing.entity.js';
 import { Order } from './order.entity.js';
 
 /**
@@ -23,6 +24,13 @@ export class OrderLine {
   @ManyToOne(() => Order, (order) => order.lines, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'order_id' })
   order!: Relation<Order>;
+
+  @Column({ name: 'listing_id', type: 'uuid' })
+  listingId!: string;
+
+  @ManyToOne(() => Listing)
+  @JoinColumn({ name: 'listing_id' })
+  listing!: Relation<Listing>;
 
   @Column({ name: 'listing_item_id', type: 'uuid' })
   listingItemId!: string;

@@ -67,6 +67,30 @@ export interface PlaceOrderInput {
   note?: string | null;
 }
 
+/**
+ * One order to create: lines from a single pre-order listing, or from one or
+ * more in-stock listings of the same seller.
+ */
+export interface OrderRequest {
+  lines: { listingId: string; itemId: string; quantity: string }[];
+  paymentMethod: PaymentMethod;
+  deliveryLocation: string;
+  note?: string | null;
+}
+
+/** A validated, priced order that is ready to be inserted. */
+interface OrderPlan {
+  seller: Listing['seller'];
+  /** Set for a pre-order: the round the order belongs to. */
+  preorderListingId: string | null;
+  lines: NewOrderLine[];
+  /** Option id -> name, to explain a shortage. */
+  itemNames: Map<string, string>;
+  paymentMethod: PaymentMethod;
+  deliveryLocation: string;
+  note: string | null;
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PAGE_SIZE = 20;
 const CODE_ATTEMPTS = 5;
@@ -103,12 +127,56 @@ export class OrdersService {
       `order:${buyerId}`,
       idempotencyKey,
       async () => {
-        const id = await this.create(buyerId, input);
+        const [id] = await this.createMany(buyerId, [
+          {
+            ...input,
+            lines: input.lines.map((line) => ({
+              ...line,
+              listingId: input.listingId,
+            })),
+          },
+        ]);
         return { id, value: id };
       },
       (id) => Promise.resolve(id),
     );
     return { order: await this.getForParticipant(buyerId, value), replayed };
+  }
+
+  /**
+   * Creates several orders at once, for a checkout: all of them or none.
+   * Stock for every line is reserved in one transaction, so a shortage on
+   * any line leaves stock and orders untouched. `withinTransaction` runs in
+   * the same transaction after the inserts (the cart removes what was
+   * bought). Returns the new order ids in request order.
+   */
+  async createMany(
+    buyerId: string,
+    requests: OrderRequest[],
+    withinTransaction?: (tx: Tx) => Promise<void>,
+  ): Promise<string[]> {
+    if (requests.length === 0) {
+      throw new BadRequestException('Nothing to order');
+    }
+    const plans: OrderPlan[] = [];
+    for (const request of requests) {
+      plans.push(await this.plan(buyerId, request));
+    }
+
+    const ids = await this.insertWithUniqueCodes(
+      buyerId,
+      plans,
+      withinTransaction,
+    );
+
+    const buyer = await this.users.getById(buyerId);
+    if (!buyer.deliveryLocation) {
+      await this.users.updateProfile(buyerId, {
+        deliveryLocation: plans[0].deliveryLocation,
+      });
+    }
+    await this.listings.invalidateCache();
+    return ids;
   }
 
   /** Buyer and seller see the order; to anyone else it does not exist. */
@@ -175,7 +243,10 @@ export class OrdersService {
         );
       }
 
-      const listing = await this.listings.findById(order.listingId);
+      // Only pre-orders can be edited, and they always have their listing.
+      const listing = order.listingId
+        ? await this.listings.findById(order.listingId)
+        : null;
       if (!listing) {
         throw new NotFoundException('Listing not found');
       }
@@ -270,7 +341,7 @@ export class OrdersService {
         const now = new Date();
         assertCanCancel(order, actor, {
           now,
-          orderDeadline: order.listing.orderDeadline,
+          orderDeadline: order.listing?.orderDeadline ?? null,
         });
 
         await this.listings.releaseStock(
@@ -321,34 +392,80 @@ export class OrdersService {
     return this.getForParticipant(userId, id);
   }
 
-  private async create(
+  /** Checks one order request against its listings and prices it. */
+  private async plan(
     buyerId: string,
-    input: PlaceOrderInput,
-  ): Promise<string> {
-    const listing = await this.listings.findById(input.listingId);
-    if (!listing || !isListingOpen(listing, new Date())) {
-      throw new DomainException(
-        409,
-        'LISTING_NOT_OPEN',
-        'This listing is not open for orders',
+    request: OrderRequest,
+  ): Promise<OrderPlan> {
+    const listingIds = [
+      ...new Set(request.lines.map((line) => line.listingId)),
+    ];
+    const now = new Date();
+    const listings: Listing[] = [];
+    for (const id of listingIds) {
+      const listing = await this.listings.findById(id);
+      if (!listing || !isListingOpen(listing, now)) {
+        throw new DomainException(
+          409,
+          'LISTING_NOT_OPEN',
+          'This listing is not open for orders',
+          { listingId: id },
+        );
+      }
+      if (listing.sellerId === buyerId) {
+        throw new DomainException(
+          422,
+          'OWN_LISTING',
+          'You cannot order from your own listing',
+        );
+      }
+      listings.push(listing);
+    }
+    if (listings.length === 0) {
+      throw new BadRequestException('An order needs at least one line');
+    }
+    if (new Set(listings.map((listing) => listing.sellerId)).size > 1) {
+      throw new BadRequestException('One order holds one seller’s goods');
+    }
+    const preorder = listings.find(
+      (listing) => listing.mode === ListingMode.Preorder,
+    );
+    if (preorder && listings.length > 1) {
+      throw new BadRequestException(
+        'A pre-order is ordered on its own, one order per round',
       );
     }
-    if (listing.sellerId === buyerId) {
+    for (const listing of listings) {
+      this.assertPaymentMethod(listing, request.paymentMethod);
+    }
+
+    if (
+      request.lines.length < 1 ||
+      request.lines.length > ORDER_LIMITS.linesMax
+    ) {
       throw new DomainException(
         422,
-        'OWN_LISTING',
-        'You cannot order from your own listing',
+        'INVALID_QUANTITY',
+        `an order needs 1-${ORDER_LIMITS.linesMax} lines`,
+        { problems: [`an order needs 1-${ORDER_LIMITS.linesMax} lines`] },
       );
     }
-    this.assertPaymentMethod(listing, input.paymentMethod);
+    const lines: NewOrderLine[] = [];
+    for (const listing of listings) {
+      lines.push(
+        ...this.buildLines(
+          listing,
+          request.lines.filter((line) => line.listingId === listing.id),
+        ),
+      );
+    }
+    lines.forEach((line, index) => {
+      line.sortOrder = index;
+    });
 
-    const deliveryLocation = this.cleanDeliveryLocation(input.deliveryLocation);
-    const lines = this.buildLines(listing, input.lines);
-    const isPreorder = listing.mode === ListingMode.Preorder;
-
-    if (isPreorder) {
+    if (preorder) {
       const existing = await this.orders.findActivePreorder(
-        listing.id,
+        preorder.id,
         buyerId,
       );
       if (existing) {
@@ -356,23 +473,19 @@ export class OrdersService {
       }
     }
 
-    const qr = input.paymentMethod === PaymentMethod.PrepaidQr;
-    const id = await this.insertWithUniqueCode(buyerId, listing, lines, {
-      isPreorder,
-      paymentMethod: input.paymentMethod,
-      deliveryLocation,
-      note: input.note?.trim() || null,
-      sellerBankBin: qr ? listing.seller.bankBin : null,
-      sellerBankAccountNumber: qr ? listing.seller.bankAccountNumber : null,
-      sellerBankAccountName: qr ? listing.seller.bankAccountName : null,
-    });
-
-    const buyer = await this.users.getById(buyerId);
-    if (!buyer.deliveryLocation) {
-      await this.users.updateProfile(buyerId, { deliveryLocation });
-    }
-    await this.listings.invalidateCache();
-    return id;
+    return {
+      seller: listings[0].seller,
+      preorderListingId: preorder?.id ?? null,
+      lines,
+      itemNames: new Map(
+        listings.flatMap((listing) =>
+          listing.items.map((item) => [item.id, item.name] as const),
+        ),
+      ),
+      paymentMethod: request.paymentMethod,
+      deliveryLocation: this.cleanDeliveryLocation(request.deliveryLocation),
+      note: request.note?.trim() || null,
+    };
   }
 
   private cleanDeliveryLocation(value: string): string {
@@ -456,6 +569,7 @@ export class OrdersService {
         return;
       }
       lines.push({
+        listingId: listing.id,
         listingItemId: item.id,
         itemName: item.itemName,
         unit: item.unit,
@@ -480,32 +594,24 @@ export class OrdersService {
     return lines;
   }
 
-  private async insertWithUniqueCode(
+  private async insertWithUniqueCodes(
     buyerId: string,
-    listing: Listing,
-    lines: NewOrderLine[],
-    fields: {
-      isPreorder: boolean;
-      paymentMethod: PaymentMethod;
-      deliveryLocation: string;
-      note: string | null;
-      sellerBankBin: string | null;
-      sellerBankAccountNumber: string | null;
-      sellerBankAccountName: string | null;
-    },
-  ): Promise<string> {
-    const totalAmount = lines.reduce((sum, line) => sum + line.lineTotal, 0);
-    const names = new Map(listing.items.map((item) => [item.id, item.name]));
+    plans: OrderPlan[],
+    withinTransaction?: (tx: Tx) => Promise<void>,
+  ): Promise<string[]> {
+    const names = new Map(plans.flatMap((plan) => [...plan.itemNames]));
 
     for (let attempt = 1; ; attempt += 1) {
       try {
         return await this.transactions.run(async (tx) => {
           const short = await this.listings.reserveStock(
             tx,
-            lines.map((line) => ({
-              itemId: line.listingItemId,
-              quantity: line.quantity,
-            })),
+            plans.flatMap((plan) =>
+              plan.lines.map((line) => ({
+                itemId: line.listingItemId,
+                quantity: line.quantity,
+              })),
+            ),
           );
           if (short.length > 0) {
             // Throwing rolls back every reservation made so far.
@@ -522,33 +628,61 @@ export class OrdersService {
               },
             );
           }
-          return this.orders.insert(
-            tx,
-            {
-              ...fields,
-              code: generateOrderCode(),
-              listingId: listing.id,
-              buyerId,
-              sellerId: listing.sellerId,
-              totalAmount,
-              // Set here, in milliseconds, so list cursors compare exactly.
-              createdAt: new Date(),
-            },
-            lines,
-          );
+          const ids: string[] = [];
+          for (const plan of plans) {
+            const qr = plan.paymentMethod === PaymentMethod.PrepaidQr;
+            ids.push(
+              await this.orders.insert(
+                tx,
+                {
+                  code: generateOrderCode(),
+                  listingId: plan.preorderListingId,
+                  buyerId,
+                  sellerId: plan.seller.id,
+                  isPreorder: plan.preorderListingId !== null,
+                  paymentMethod: plan.paymentMethod,
+                  deliveryLocation: plan.deliveryLocation,
+                  note: plan.note,
+                  sellerBankBin: qr ? plan.seller.bankBin : null,
+                  sellerBankAccountNumber: qr
+                    ? plan.seller.bankAccountNumber
+                    : null,
+                  sellerBankAccountName: qr
+                    ? plan.seller.bankAccountName
+                    : null,
+                  totalAmount: plan.lines.reduce(
+                    (sum, line) => sum + line.lineTotal,
+                    0,
+                  ),
+                  // Set here, in milliseconds, so list cursors compare exactly.
+                  createdAt: new Date(),
+                },
+                plan.lines,
+              ),
+            );
+          }
+          await withinTransaction?.(tx);
+          return ids;
         });
       } catch (error) {
         if (!(error instanceof OrderConflictError)) {
           throw error;
         }
         if (error.kind === 'active-preorder') {
-          const existing = await this.orders.findActivePreorder(
-            listing.id,
-            buyerId,
-          );
-          throw alreadyOrdered(existing?.id);
+          for (const plan of plans) {
+            if (plan.preorderListingId) {
+              const existing = await this.orders.findActivePreorder(
+                plan.preorderListingId,
+                buyerId,
+              );
+              if (existing) {
+                throw alreadyOrdered(existing.id);
+              }
+            }
+          }
+          throw alreadyOrdered(undefined);
         }
-        // A code collision: the transaction rolled back, try a new code.
+        // A code collision: the transaction rolled back, try new codes.
         if (attempt >= CODE_ATTEMPTS) {
           throw error;
         }
@@ -627,7 +761,9 @@ function editBlocker(order: Order, now: Date): string | null {
   if (order.paymentStatus !== PaymentStatus.Unpaid) {
     return 'payment_reported';
   }
-  return isListingOpen(order.listing, now) ? null : 'deadline_passed';
+  return order.listing && isListingOpen(order.listing, now)
+    ? null
+    : 'deadline_passed';
 }
 
 function alreadyOrdered(orderId: string | undefined): DomainException {

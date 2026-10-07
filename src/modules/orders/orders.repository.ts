@@ -14,7 +14,8 @@ import {
 
 export interface NewOrder {
   code: string;
-  listingId: string;
+  /** Null for an in-stock order; see Order.listingId. */
+  listingId: string | null;
   buyerId: string;
   sellerId: string;
   isPreorder: boolean;
@@ -29,6 +30,7 @@ export interface NewOrder {
 }
 
 export interface NewOrderLine {
+  listingId: string;
   listingItemId: string;
   itemName: string;
   unit: string;
@@ -80,7 +82,12 @@ export class OrderConflictError extends Error {
   }
 }
 
-const RELATIONS = { lines: true, buyer: true, seller: true, listing: true };
+const RELATIONS = {
+  lines: { listing: true },
+  buyer: true,
+  seller: true,
+  listing: true,
+};
 const LINE_ORDER = { lines: { sortOrder: 'ASC' as const } };
 
 @Injectable()
@@ -217,7 +224,10 @@ export class OrdersRepository {
       .addOrderBy('o.id', 'DESC')
       .limit(limit);
     if (filters.listingId) {
-      query.andWhere('o.listing_id = :listingId', filters);
+      query.andWhere(
+        'EXISTS (SELECT 1 FROM order_lines fl WHERE fl.order_id = o.id AND fl.listing_id = :listingId)',
+        filters,
+      );
     }
     if (filters.paymentStatus) {
       query.andWhere('o.payment_status = :paymentStatus', filters);
@@ -245,22 +255,39 @@ export class OrdersRepository {
     return ids.map((id) => byId.get(id) as Order);
   }
 
-  countForListing(listingId: string): Promise<number> {
-    return this.repository.count({ where: { listingId } });
+  /** Orders that contain at least one option of the listing. */
+  async countForListing(listingId: string): Promise<number> {
+    const [row]: Array<{ count: number }> = await this.repository.query(
+      `SELECT COUNT(DISTINCT order_id)::int AS count
+         FROM order_lines WHERE listing_id = $1`,
+      [listingId],
+    );
+    return row.count;
   }
 
-  /** Every order on a listing, oldest first, for the seller's summary. */
-  listForListing(
+  /**
+   * Every order holding an option of the listing, oldest first, for the
+   * seller's summary. An in-stock order may also hold other listings' lines;
+   * the caller keeps only this listing's.
+   */
+  async listForListing(
     listingId: string,
     includeCancelled: boolean,
   ): Promise<Order[]> {
+    const rows: Array<{ order_id: string }> = await this.repository.query(
+      `SELECT DISTINCT order_id FROM order_lines WHERE listing_id = $1`,
+      [listingId],
+    );
+    if (rows.length === 0) {
+      return [];
+    }
     return this.repository.find({
-      where: {
-        listingId,
+      where: rows.map((row) => ({
+        id: row.order_id,
         ...(includeCancelled
           ? {}
           : { fulfillmentStatus: Not(FulfillmentStatus.Cancelled) }),
-      },
+      })),
       relations: RELATIONS,
       order: { createdAt: 'ASC', id: 'ASC', ...LINE_ORDER },
     });
@@ -273,11 +300,12 @@ export class OrdersRepository {
   async totalsForListing(listingId: string): Promise<ListingTotals> {
     const [money]: Array<{ order_count: number; total: string; paid: string }> =
       await this.repository.query(
-        `SELECT COUNT(*)::int AS order_count,
-                COALESCE(SUM(total_amount), 0) AS total,
-                COALESCE(SUM(total_amount) FILTER (WHERE payment_status = 'paid'), 0) AS paid
-           FROM orders
-          WHERE listing_id = $1 AND fulfillment_status <> 'cancelled'`,
+        `SELECT COUNT(DISTINCT o.id)::int AS order_count,
+                COALESCE(SUM(ol.line_total), 0) AS total,
+                COALESCE(SUM(ol.line_total) FILTER (WHERE o.payment_status = 'paid'), 0) AS paid
+           FROM order_lines ol
+           JOIN orders o ON o.id = ol.order_id
+          WHERE ol.listing_id = $1 AND o.fulfillment_status <> 'cancelled'`,
         [listingId],
       );
     const quantities: Array<{ item_id: string; quantity: string }> =
@@ -285,7 +313,7 @@ export class OrdersRepository {
         `SELECT ol.listing_item_id AS item_id, SUM(ol.quantity) AS quantity
            FROM order_lines ol
            JOIN orders o ON o.id = ol.order_id
-          WHERE o.listing_id = $1 AND o.fulfillment_status <> 'cancelled'
+          WHERE ol.listing_id = $1 AND o.fulfillment_status <> 'cancelled'
           GROUP BY ol.listing_item_id`,
         [listingId],
       );
@@ -299,13 +327,20 @@ export class OrdersRepository {
     };
   }
 
-  /** Which listing each of the given orders belongs to. */
-  async listingIdsOf(orderIds: string[]): Promise<Map<string, string>> {
-    const orders = await this.repository.find({
-      where: orderIds.map((id) => ({ id })),
-      select: { id: true, listingId: true },
-    });
-    return new Map(orders.map((order) => [order.id, order.listingId]));
+  /** Which of the given orders hold at least one option of the listing. */
+  async ordersOfListing(
+    orderIds: string[],
+    listingId: string,
+  ): Promise<Set<string>> {
+    if (orderIds.length === 0) {
+      return new Set();
+    }
+    const rows: Array<{ order_id: string }> = await this.repository.query(
+      `SELECT DISTINCT order_id FROM order_lines
+        WHERE listing_id = $1 AND order_id = ANY($2::uuid[])`,
+      [listingId, orderIds],
+    );
+    return new Set(rows.map((row) => row.order_id));
   }
 }
 

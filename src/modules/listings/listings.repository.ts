@@ -292,8 +292,9 @@ export class ListingsRepository {
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
         cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
-        (SELECT COUNT(*)::int FROM orders o
-          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
+        (SELECT COUNT(DISTINCT o.id)::int FROM order_lines ol
+           JOIN orders o ON o.id = ol.order_id
+          WHERE ol.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
         CASE WHEN l.mode = 'in_stock' AND stock.item_count = 1
              THEN stock.only_stock END AS stock_quantity
       FROM listings l
