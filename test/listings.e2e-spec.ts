@@ -8,6 +8,7 @@ import { createTestApp } from './utils/create-test-app.js';
 
 const inStock = {
   mode: 'in_stock',
+  condition: 'good',
   title: 'Loa bluetooth cũ',
   categoryId: 4,
   description: 'Còn mới 90%',
@@ -82,6 +83,45 @@ describe('Listings API', () => {
   });
 
   describe('POST /listings', () => {
+    it('stores the condition of second-hand goods and shows it everywhere', async () => {
+      const id = await createOpen();
+
+      const detail = await seller.get(`/listings/${id}`).expect(200);
+      expect(detail.body).toMatchObject({
+        condition: 'good',
+        conditionPercent: 90,
+      });
+      const page = await seller.get('/listings').expect(200);
+      expect(page.body.items[0]).toMatchObject({
+        condition: 'good',
+        conditionPercent: 90,
+        itemCount: 1,
+        singleItemId: detail.body.items[0].id,
+        category: { id: 4, isPerishable: false },
+      });
+    });
+
+    it('asks for a condition outside food and refuses one on food', async () => {
+      const { condition: _omitted, ...withoutCondition } = inStock;
+      const missing = await seller
+        .post('/listings')
+        .send(withoutCondition)
+        .expect(400);
+      expect(missing.body.message).toContain('in-stock goods need a condition');
+
+      const food = await seller
+        .post('/listings')
+        .send({ ...inStock, categoryId: 2 })
+        .expect(400);
+      expect(food.body.message).toContain(
+        'only in-stock goods outside food categories have a condition',
+      );
+      await seller
+        .post('/listings')
+        .send({ ...withoutCondition, categoryId: 2 })
+        .expect(201);
+    });
+
     it('requires a session', async () => {
       const { default: request } = await import('supertest');
       await request(app.getHttpServer())

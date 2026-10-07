@@ -34,12 +34,16 @@ export class Order {
   @Column({ type: 'varchar', length: 9, unique: true })
   code!: string;
 
-  @Column({ name: 'listing_id', type: 'uuid' })
-  listingId!: string;
+  /**
+   * The pre-order round this order belongs to. Null for an in-stock order,
+   * whose lines may come from several listings of the same seller.
+   */
+  @Column({ name: 'listing_id', type: 'uuid', nullable: true })
+  listingId!: string | null;
 
-  @ManyToOne(() => Listing)
+  @ManyToOne(() => Listing, { nullable: true })
   @JoinColumn({ name: 'listing_id' })
-  listing!: Relation<Listing>;
+  listing!: Relation<Listing> | null;
 
   @Column({ name: 'buyer_id', type: 'uuid' })
   buyerId!: string;

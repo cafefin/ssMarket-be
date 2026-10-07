@@ -7,8 +7,13 @@ import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
 
-type Item = { id: string; name: string; stockQuantity: number | null };
-type Listing = { id: string; items: Item[] };
+type Item = {
+  id: string;
+  name: string;
+  stockQuantity: number | null;
+  combos?: Array<{ quantity: string; price: number }>;
+};
+type Listing = { id: string; title?: string; items: Item[] };
 type Order = {
   id: string;
   code: string;
@@ -56,6 +61,7 @@ describe('Orders API', () => {
   const inStock = (overrides: object = {}) =>
     createListing({
       mode: 'in_stock',
+      condition: 'good',
       title: 'Loa và phụ kiện',
       categoryId: 4,
       acceptsPrepaidQr: true,
@@ -147,6 +153,58 @@ describe('Orders API', () => {
   });
 
   describe('placing an order', () => {
+    it('charges combo prices and keeps them on the order line', async () => {
+      const listing = await inStock({
+        items: [
+          {
+            name: 'Bút bi',
+            unit: 'cái',
+            unitPrice: 10000,
+            stockQuantity: '500',
+            combos: [{ quantity: '100', price: 900000 }],
+          },
+        ],
+      });
+      expect(item(listing, 'Bút bi')).toMatchObject({
+        combos: [{ quantity: '100', price: 900000 }],
+      });
+
+      const placed = await order(listing, [['Bút bi', '230']]);
+
+      expect(placed.totalAmount).toBe(2_100_000);
+      expect(placed.lines[0]).toMatchObject({
+        lineTotal: 2_100_000,
+        listTotal: 2_300_000,
+        combos: [{ quantity: '100', price: 900000 }],
+      });
+
+      // A later change to the listing does not reprice the order.
+      await seller
+        .patch(`/listings/${listing.id}`)
+        .send({
+          mode: 'in_stock',
+          condition: 'good',
+          title: listing.title,
+          categoryId: 4,
+          acceptsPrepaidQr: true,
+          acceptsPayOnDelivery: true,
+          items: [
+            {
+              id: item(listing, 'Bút bi').id,
+              name: 'Bút bi',
+              unit: 'cái',
+              unitPrice: 10000,
+              stockQuantity: '270',
+            },
+          ],
+        })
+        .expect(200);
+      const again = await buyer.get(`/orders/${placed.id}`).expect(200);
+      expect(again.body.totalAmount).toBe(2_100_000);
+      const edited = await seller.get(`/listings/${listing.id}`).expect(200);
+      expect(item(edited.body as Listing, 'Bút bi').combos).toEqual([]);
+    });
+
     it('prices the lines from the listing and takes them out of stock', async () => {
       const listing = await inStock();
 
@@ -786,6 +844,7 @@ describe('Orders API', () => {
     const edit = (listing: Listing, items: object[]) =>
       seller.patch(`/listings/${listing.id}`).send({
         mode: 'in_stock',
+        condition: 'good',
         title: 'Loa và phụ kiện',
         categoryId: 4,
         acceptsPrepaidQr: true,

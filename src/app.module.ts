@@ -11,6 +11,7 @@ import { DatabaseModule } from './database/database.module.js';
 import { ACCESS_TOKEN_TTL_SECONDS } from './modules/auth/auth.constants.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { BanksModule } from './modules/banks/banks.module.js';
+import { CartModule } from './modules/cart/cart.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { isDevLoginEnabled } from './modules/dev-login/dev-login.enabled.js';
 import { DevLoginModule } from './modules/dev-login/dev-login.module.js';
@@ -44,6 +45,7 @@ import { RedisModule } from './redis/redis.module.js';
     AuthModule,
     ListingsModule,
     OrdersModule,
+    CartModule,
     HealthModule,
     // Registered only in development with DEV_LOGIN_ENABLED=true; otherwise
     // the route does not exist at all.

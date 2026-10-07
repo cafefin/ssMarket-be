@@ -26,5 +26,6 @@ import { SummaryController } from './summary.controller.js';
     IdempotencyService,
     SalesSummaryService,
   ],
+  exports: [OrdersService, IdempotencyService],
 })
 export class OrdersModule {}

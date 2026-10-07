@@ -1,6 +1,11 @@
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { generateOrderCode } from './order-code.js';
-import { lineTotal, quantityProblem, toThousandths } from './order-math.js';
+import {
+  lineTotal,
+  lineTotalWithCombos,
+  quantityProblem,
+  toThousandths,
+} from './order-math.js';
 import {
   assertCanCancel,
   assertCanDeliver,
@@ -57,6 +62,60 @@ describe('lineTotal', () => {
 
   it('refuses a malformed quantity instead of guessing', () => {
     expect(() => lineTotal(1000, 'abc')).toThrow('Invalid quantity: abc');
+  });
+});
+
+// The frontend (src/features/orders/lib/order-math.test.ts) uses the same
+// table, so the total a buyer sees before ordering is the one charged.
+describe('lineTotalWithCombos', () => {
+  const hundred = [{ quantity: '100', price: 900_000 }];
+  const smallAndLarge = [
+    { quantity: '3', price: 25_000 },
+    { quantity: '5', price: 40_000 },
+  ];
+
+  it.each<
+    [string, number, { quantity: string; price: number }[], string, number]
+  >([
+    ['no combo', 10_000, [], '7', 70_000],
+    ['one piece', 10_000, hundred, '1', 10_000],
+    ['just below the combo', 10_000, hundred, '99', 990_000],
+    ['exactly the combo', 10_000, hundred, '100', 900_000],
+    ['two combos and some singles', 10_000, hundred, '230', 2_100_000],
+    ['two small combos beat one large', 10_000, smallAndLarge, '6', 50_000],
+    ['mixing combo sizes', 10_000, smallAndLarge, '8', 65_000],
+    ['three small combos', 10_000, smallAndLarge, '9', 75_000],
+    ['two large combos', 10_000, smallAndLarge, '10', 80_000],
+    [
+      'kg with a fractional rest',
+      35_000,
+      [{ quantity: '1', price: 30_000 }],
+      '2.5',
+      77_500,
+    ],
+    [
+      'a combo dearer than singles is ignored',
+      1_000,
+      [{ quantity: '2', price: 5_000 }],
+      '2',
+      2_000,
+    ],
+  ])('%s', (_label, unitPrice, combos, quantity, expected) => {
+    expect(lineTotalWithCombos(unitPrice, combos, quantity)).toBe(expected);
+  });
+
+  it('handles the largest quantity quickly', () => {
+    const started = Date.now();
+    expect(
+      lineTotalWithCombos(35_000, [{ quantity: '0.3', price: 10_000 }], '9999'),
+    ).toBe(Math.floor(99_990 / 3) * 10_000);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('refuses a malformed quantity', () => {
+    expect(() => lineTotalWithCombos(1000, hundred, 'x')).toThrow(
+      'Invalid quantity: x',
+    );
   });
 });
 

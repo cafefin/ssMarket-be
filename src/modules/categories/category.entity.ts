@@ -25,4 +25,8 @@ export class Category {
   /** A hidden category keeps its listings but takes no new ones. */
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;
+
+  /** Food and other goods that go off; their listings have no condition. */
+  @Column({ name: 'is_perishable', type: 'boolean', default: false })
+  isPerishable!: boolean;
 }

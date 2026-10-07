@@ -16,6 +16,7 @@ describe('Admin categories API', () => {
 
   const draft = (categoryId: number) => ({
     mode: 'in_stock',
+    condition: 'good',
     title: 'Sách cũ',
     categoryId,
     description: 'Còn tốt',
@@ -34,8 +35,9 @@ describe('Admin categories API', () => {
   const restoreCategories = async () => {
     await dataSource.query('DELETE FROM categories WHERE id > 6');
     await dataSource.query(`
-      UPDATE categories SET name = v.name, name_en = v.name_en, is_active = true
-      FROM (VALUES (1,'Đồ cũ','Second-hand'),(2,'Thực phẩm tươi','Fresh food'),(3,'Đồ ăn','Food'),(4,'Điện tử','Electronics'),(5,'Gia dụng','Household'),(6,'Khác','Other')) AS v(id,name,name_en)
+      UPDATE categories SET name = v.name, name_en = v.name_en, is_active = true,
+        is_perishable = v.is_perishable
+      FROM (VALUES (1,'Đồ cũ','Second-hand',false),(2,'Thực phẩm tươi','Fresh food',true),(3,'Đồ ăn','Food',true),(4,'Điện tử','Electronics',false),(5,'Gia dụng','Household',false),(6,'Khác','Other',false)) AS v(id,name,name_en,is_perishable)
       WHERE categories.id = v.id
     `);
   };
@@ -89,6 +91,7 @@ describe('Admin categories API', () => {
       slug: 'sach',
       name: 'Sách',
       nameEn: 'Books',
+      isPerishable: false,
     });
   });
 
@@ -125,6 +128,7 @@ describe('Admin categories API', () => {
       slug: 'dien-tu',
       name: 'Đồ công nghệ',
       nameEn: 'Tech',
+      isPerishable: false,
     });
   });
 

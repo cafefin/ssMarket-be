@@ -276,6 +276,7 @@ describe('ssMarket API', () => {
         slug: 'thuc-pham-tuoi',
         name: 'Thực phẩm tươi',
         nameEn: 'Fresh food',
+        isPerishable: true,
       });
     });
   });

@@ -41,10 +41,19 @@ export class SalesSummaryService {
         `The summary is limited to ${MAX_ROWS} orders`,
       );
     }
-    const [orders, totals] = await Promise.all([
+    const [allOrders, totals] = await Promise.all([
       this.orders.listForListing(listingId, includeCancelled),
       this.orders.totalsForListing(listingId),
     ]);
+    // An in-stock order from the cart may hold other listings too; the table
+    // shows only this listing's part of it.
+    const orders = allOrders.map((order) => {
+      const lines = order.lines.filter((line) => line.listingId === listingId);
+      return Object.assign(order, {
+        lines,
+        totalAmount: lines.reduce((sum, line) => sum + line.lineTotal, 0),
+      });
+    });
 
     // Removed items keep their column while any shown order still has them.
     const ordered = new Set(
@@ -106,11 +115,11 @@ export class SalesSummaryService {
   ): Promise<BulkResultDto[]> {
     await this.findOwned(sellerId, listingId);
     const unique = [...new Set(orderIds)];
-    const listingOf = await this.orders.listingIdsOf(unique);
+    const ofListing = await this.orders.ordersOfListing(unique, listingId);
 
     const results: BulkResultDto[] = [];
     for (const orderId of unique) {
-      if (listingOf.get(orderId) !== listingId) {
+      if (!ofListing.has(orderId)) {
         results.push({ orderId, ok: false, code: 'NOT_IN_LISTING' });
         continue;
       }

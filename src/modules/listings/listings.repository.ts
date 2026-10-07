@@ -1,12 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { type EntityManager, Repository } from 'typeorm';
 import type { Tx } from '../../database/transaction.js';
+import { ListingItemCombo } from './listing-item-combo.entity.js';
 import { ListingItem } from './listing-item.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
 import {
   ListingSort,
+  type ListingCondition,
   type ListingMode,
   type ListingStatus,
 } from './listings.constants.js';
@@ -24,6 +26,8 @@ export interface ListingFields {
   orderDeadline: Date | null;
   deliveryDate: string | null;
   searchText: string;
+  condition: ListingCondition | null;
+  conditionPercent: number | null;
   publishedAt: Date | null;
   closedAt: Date | null;
   /** The listing this one was reopened from, if any. */
@@ -38,6 +42,7 @@ export interface ListingItemFields {
   unitPrice: number;
   stockQuantity: string | null;
   sortOrder: number;
+  combos: { quantity: string; price: number }[];
 }
 
 export interface OpenListingSearch {
@@ -47,6 +52,11 @@ export interface OpenListingSearch {
   mode: ListingMode | null;
   sort: ListingSort;
   sellerId: string | null;
+  /** Bounds on the cheapest option's unit price, integer VND. */
+  minPrice: number | null;
+  maxPrice: number | null;
+  /** Keep only listings whose condition is at least this percentage. */
+  minConditionPercent: number | null;
   cursor: ListingCursor | null;
   limit: number;
   now: Date;
@@ -64,6 +74,12 @@ export interface OpenListingRow {
   category_slug: string;
   category_name: string;
   category_name_en: string;
+  category_is_perishable: boolean;
+  condition: ListingCondition | null;
+  condition_percent: number | null;
+  item_count: number;
+  single_item_id: string | null;
+  has_combos: boolean;
   seller_id: string;
   seller_name: string;
   seller_avatar_url: string | null;
@@ -85,15 +101,40 @@ export class ListingsRepository {
   findByIdWithRelations(id: string): Promise<Listing | null> {
     return this.repository.findOne({
       where: { id },
-      relations: { seller: true, category: true, items: true, images: true },
+      relations: {
+        seller: true,
+        category: true,
+        items: { combos: true },
+        images: true,
+      },
       order: { items: { sortOrder: 'ASC' }, images: { sortOrder: 'ASC' } },
+    });
+  }
+
+  /** Options by id, each with its combos and its listing (seller, photos, options). */
+  findItems(ids: string[]): Promise<ListingItem[]> {
+    if (ids.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.repository.manager.find(ListingItem, {
+      where: ids.map((id) => ({ id })),
+      relations: {
+        combos: true,
+        listing: { seller: true, images: true, items: true },
+      },
+      order: { listing: { images: { sortOrder: 'ASC' } } },
     });
   }
 
   findBySeller(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.repository.find({
       where: { sellerId, ...(status ? { status } : {}) },
-      relations: { seller: true, category: true, items: true, images: true },
+      relations: {
+        seller: true,
+        category: true,
+        items: { combos: true },
+        images: true,
+      },
       order: {
         createdAt: 'DESC',
         items: { sortOrder: 'ASC' },
@@ -107,10 +148,17 @@ export class ListingsRepository {
     return this.repository.manager.transaction(async (manager) => {
       const result = await manager.insert(Listing, fields);
       const id = result.identifiers[0].id as string;
-      await manager.insert(
-        ListingItem,
-        items.map((item) => ({ ...item, listingId: id })),
-      );
+      for (const { combos, ...item } of items) {
+        const inserted = await manager.insert(ListingItem, {
+          ...item,
+          listingId: id,
+        });
+        await insertCombos(
+          manager,
+          inserted.identifiers[0].id as string,
+          combos,
+        );
+      }
       return id;
     });
   }
@@ -155,17 +203,25 @@ export class ListingsRepository {
         }
       }
 
-      for (const item of items) {
+      for (const { combos, ...item } of items) {
+        let itemId: string;
         if (item.id) {
-          const { id: itemId, ...values } = item;
+          const { id: existingId, ...values } = item;
+          itemId = existingId;
           await manager.update(
             ListingItem,
             { id: itemId, listingId: id },
             { ...values, isActive: true },
           );
+          await manager.delete(ListingItemCombo, { listingItemId: itemId });
         } else {
-          await manager.insert(ListingItem, { ...item, listingId: id });
+          const inserted = await manager.insert(ListingItem, {
+            ...item,
+            listingId: id,
+          });
+          itemId = inserted.identifiers[0].id as string;
         }
+        await insertCombos(manager, itemId, combos);
       }
     });
   }
@@ -194,6 +250,15 @@ export class ListingsRepository {
 
     if (search.sellerId !== null) {
       where.push(`l.seller_id = ${bind(search.sellerId)}::uuid`);
+    }
+    if (search.minPrice !== null) {
+      where.push(`cheapest.unit_price >= ${bind(search.minPrice)}`);
+    }
+    if (search.maxPrice !== null) {
+      where.push(`cheapest.unit_price <= ${bind(search.maxPrice)}`);
+    }
+    if (search.minConditionPercent !== null) {
+      where.push(`l.condition_percent >= ${bind(search.minConditionPercent)}`);
     }
 
     let orderBy = ['l.published_at DESC', 'l.id DESC'];
@@ -230,12 +295,21 @@ export class ListingsRepository {
         to_char(l.delivery_date, 'YYYY-MM-DD') AS delivery_date,
         l.published_at,
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
-        c.name_en AS category_name_en,
+        c.name_en AS category_name_en, c.is_perishable AS category_is_perishable,
+        l.condition, l.condition_percent,
+        stock.item_count,
+        EXISTS (
+          SELECT 1 FROM listing_item_combos lc
+          JOIN listing_items li ON li.id = lc.listing_item_id
+          WHERE li.listing_id = l.id AND li.is_active
+        ) AS has_combos,
+        CASE WHEN stock.item_count = 1 THEN stock.only_id END AS single_item_id,
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
         cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
-        (SELECT COUNT(*)::int FROM orders o
-          WHERE o.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
+        (SELECT COUNT(DISTINCT o.id)::int FROM order_lines ol
+           JOIN orders o ON o.id = ol.order_id
+          WHERE ol.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
         CASE WHEN l.mode = 'in_stock' AND stock.item_count = 1
              THEN stock.only_stock END AS stock_quantity
       FROM listings l
@@ -250,7 +324,8 @@ export class ListingsRepository {
         WHERE listing_id = l.id AND is_active ORDER BY unit_price, sort_order LIMIT 1
       ) cheapest ON true
       JOIN LATERAL (
-        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock
+        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock,
+               MIN(id::text)::uuid AS only_id
         FROM listing_items WHERE listing_id = l.id AND is_active
       ) stock ON true
       WHERE ${where.join(' AND ')}
@@ -326,6 +401,19 @@ export interface StockShortage {
   itemId: string;
   /** What is left, as a decimal string. */
   available: string;
+}
+
+async function insertCombos(
+  manager: EntityManager,
+  listingItemId: string,
+  combos: ListingItemFields['combos'],
+): Promise<void> {
+  if (combos.length > 0) {
+    await manager.insert(
+      ListingItemCombo,
+      combos.map((combo) => ({ ...combo, listingItemId })),
+    );
+  }
 }
 
 function sortedByItem(lines: ReadonlyArray<StockLine>): StockLine[] {

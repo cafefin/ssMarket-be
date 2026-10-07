@@ -3,9 +3,11 @@ import {
   FRACTIONAL_UNIT,
   LISTING_LIMITS,
   LISTING_UNITS,
+  ListingCondition,
   ListingMode,
   ListingStatus,
 } from './listings.constants.js';
+import { type Combo, lineTotal, toThousandths } from './pricing.js';
 
 export interface ListingItemInput {
   /** Set when editing to keep an existing item; absent for a new one. */
@@ -16,6 +18,8 @@ export interface ListingItemInput {
   unitPrice: number;
   /** Decimal string with up to 3 fraction digits; null means unlimited. */
   stockQuantity: string | null;
+  /** "N units for a set price"; at most three. */
+  combos: Combo[];
 }
 
 export interface ListingInput {
@@ -28,7 +32,15 @@ export interface ListingInput {
   orderDeadline: Date | null;
   /** Calendar date, YYYY-MM-DD. */
   deliveryDate: string | null;
+  /** Second-hand condition; only for in-stock goods outside food categories. */
+  condition: ListingCondition | null;
   items: ListingItemInput[];
+}
+
+/** What validation needs to know about the chosen category. */
+export interface ListingCategoryFacts {
+  /** Food and other goods that go off: they have no "condition". */
+  isPerishable: boolean;
 }
 
 const DECIMAL = /^\d{1,7}(\.\d{1,3})?$/;
@@ -78,6 +90,8 @@ function itemProblems(
     );
   }
 
+  problems.push(...comboProblems(item, label));
+
   if (mode === ListingMode.Preorder) {
     if (item.stockQuantity !== null) {
       problems.push(`${label}: pre-order items do not have stock`);
@@ -106,12 +120,56 @@ function itemProblems(
   return problems;
 }
 
+function comboProblems(item: ListingItemInput, label: string): string[] {
+  const problems: string[] = [];
+  if (item.combos.length > LISTING_LIMITS.combosMax) {
+    problems.push(`${label}: at most ${LISTING_LIMITS.combosMax} combos`);
+  }
+  // Pieces are sold whole; kg in steps of 0.1.
+  const step = item.unit === FRACTIONAL_UNIT ? 100 : 1000;
+  const sizes = new Set<number>();
+  item.combos.forEach((combo, index) => {
+    const name = `${label}, combo ${index + 1}`;
+    const size = toThousandths(combo.quantity);
+    if (size === null || size <= step || size % step !== 0) {
+      problems.push(
+        `${name}: quantity must be more than one ${item.unit === FRACTIONAL_UNIT ? '0.1 kg step' : 'unit'} and a multiple of it`,
+      );
+      return;
+    }
+    if (sizes.has(size)) {
+      problems.push(`${name}: another combo has the same quantity`);
+    }
+    sizes.add(size);
+    if (
+      !Number.isInteger(combo.price) ||
+      combo.price < LISTING_LIMITS.unitPriceMin ||
+      combo.price > LISTING_LIMITS.unitPriceMax
+    ) {
+      problems.push(
+        `${name}: price must be a whole number from ${LISTING_LIMITS.unitPriceMin} to ${LISTING_LIMITS.unitPriceMax}`,
+      );
+    } else if (
+      Number.isInteger(item.unitPrice) &&
+      combo.price >= lineTotal(item.unitPrice, combo.quantity)
+    ) {
+      problems.push(
+        `${name}: must cost less than buying the same quantity singly`,
+      );
+    }
+  });
+  return problems;
+}
+
 /**
  * Checks everything that can be decided from the input alone. Returns the
  * list of problems, empty when the input is valid. Whether the deadline is
  * still in the future is checked when publishing, not here.
  */
-export function validateListingInput(input: ListingInput): string[] {
+export function validateListingInput(
+  input: ListingInput,
+  category: ListingCategoryFacts = { isPerishable: false },
+): string[] {
   const problems: string[] = [];
   const title = input.title.trim();
 
@@ -160,6 +218,16 @@ export function validateListingInput(input: ListingInput): string[] {
     ) {
       problems.push('delivery date cannot be before the order deadline');
     }
+  }
+
+  const needsCondition =
+    input.mode === ListingMode.InStock && !category.isPerishable;
+  if (needsCondition && input.condition === null) {
+    problems.push('in-stock goods need a condition');
+  } else if (!needsCondition && input.condition !== null) {
+    problems.push(
+      'only in-stock goods outside food categories have a condition',
+    );
   }
 
   input.items.forEach((item, index) => {

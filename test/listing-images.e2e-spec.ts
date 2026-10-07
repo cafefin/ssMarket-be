@@ -13,6 +13,7 @@ import { createTestApp } from './utils/create-test-app.js';
 
 const listingBody = {
   mode: 'in_stock',
+  condition: 'good',
   title: 'Loa bluetooth cũ',
   categoryId: 4,
   description: '',

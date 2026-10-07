@@ -6,7 +6,11 @@ import {
   type ListingItemInput,
   validateListingInput,
 } from './listing-rules.js';
-import { ListingMode, ListingStatus } from './listings.constants.js';
+import {
+  ListingCondition,
+  ListingMode,
+  ListingStatus,
+} from './listings.constants.js';
 import { mediaUrl, thumbnailKey } from './media-url.js';
 import { buildSearchText } from './search-text.js';
 
@@ -15,6 +19,7 @@ const item = (overrides: Partial<ListingItemInput> = {}): ListingItemInput => ({
   unit: 'cái',
   unitPrice: 500_000,
   stockQuantity: '1',
+  combos: [],
   ...overrides,
 });
 
@@ -27,6 +32,7 @@ const inStock = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   acceptsPayOnDelivery: true,
   orderDeadline: null,
   deliveryDate: null,
+  condition: ListingCondition.LikeNew,
   items: [item()],
   ...overrides,
 });
@@ -41,6 +47,7 @@ const preorder = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   // 17:00 on 9 Oct in Vietnam
   orderDeadline: new Date('2026-10-09T10:00:00Z'),
   deliveryDate: '2026-10-12',
+  condition: null,
   items: [
     item({
       name: 'Cam sành',
@@ -74,11 +81,11 @@ describe('validateListingInput', () => {
       inStock({ description: 'a'.repeat(5001) }),
       'description must be at most 5000 characters',
     ],
-    ['no items', inStock({ items: [] }), 'a listing needs 1-20 items'],
+    ['no items', inStock({ items: [] }), 'a listing needs 1-10 items'],
     [
       'too many items',
-      inStock({ items: Array.from({ length: 21 }, () => item()) }),
-      'a listing needs 1-20 items',
+      inStock({ items: Array.from({ length: 11 }, () => item()) }),
+      'a listing needs 1-10 items',
     ],
     [
       'no payment method',
@@ -198,6 +205,115 @@ describe('validateListingInput', () => {
     );
 
     expect(problems).toHaveLength(3);
+  });
+});
+
+describe('condition', () => {
+  it('accepts ten options and the condition of in-stock goods', () => {
+    expect(
+      validateListingInput(
+        inStock({ items: Array.from({ length: 10 }, () => item()) }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('requires a condition for in-stock goods outside food', () => {
+    expect(validateListingInput(inStock({ condition: null }))).toEqual([
+      'in-stock goods need a condition',
+    ]);
+  });
+
+  it('refuses a condition on pre-orders and on food', () => {
+    const message =
+      'only in-stock goods outside food categories have a condition';
+    expect(
+      validateListingInput(preorder({ condition: ListingCondition.New })),
+    ).toEqual([message]);
+    expect(validateListingInput(inStock(), { isPerishable: true })).toEqual([
+      message,
+    ]);
+    expect(
+      validateListingInput(inStock({ condition: null }), {
+        isPerishable: true,
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe('combos', () => {
+  const withCombos = (
+    unit: string,
+    combos: { quantity: string; price: number }[],
+  ) =>
+    inStock({
+      items: [item({ unit, unitPrice: 10_000, stockQuantity: '500', combos })],
+    });
+
+  it('accepts up to three combos that are cheaper than buying singly', () => {
+    expect(
+      validateListingInput(
+        withCombos('cái', [
+          { quantity: '10', price: 95_000 },
+          { quantity: '50', price: 450_000 },
+          { quantity: '100', price: 900_000 },
+        ]),
+      ),
+    ).toEqual([]);
+    expect(
+      validateListingInput(
+        withCombos('kg', [{ quantity: '2.5', price: 24_000 }]),
+      ),
+    ).toEqual([]);
+  });
+
+  it.each<[string, string, { quantity: string; price: number }[], string]>([
+    [
+      'four combos',
+      'cái',
+      [2, 3, 4, 5].map((n) => ({ quantity: String(n), price: n * 9_000 })),
+      'item 1: at most 3 combos',
+    ],
+    [
+      'a combo of one piece',
+      'cái',
+      [{ quantity: '1', price: 9_000 }],
+      'item 1, combo 1: quantity must be more than one unit and a multiple of it',
+    ],
+    [
+      'half a piece',
+      'cái',
+      [{ quantity: '2.5', price: 20_000 }],
+      'item 1, combo 1: quantity must be more than one unit and a multiple of it',
+    ],
+    [
+      'kg finer than 0.1',
+      'kg',
+      [{ quantity: '1.25', price: 10_000 }],
+      'item 1, combo 1: quantity must be more than one 0.1 kg step and a multiple of it',
+    ],
+    [
+      'the same size twice',
+      'cái',
+      [
+        { quantity: '10', price: 90_000 },
+        { quantity: '10', price: 80_000 },
+      ],
+      'item 1, combo 2: another combo has the same quantity',
+    ],
+    [
+      'a combo that saves nothing',
+      'cái',
+      [{ quantity: '10', price: 100_000 }],
+      'item 1, combo 1: must cost less than buying the same quantity singly',
+    ],
+    [
+      'a price below the minimum',
+      'cái',
+      [{ quantity: '10', price: 500 }],
+      'item 1, combo 1: price must be a whole number from 1000 to 1000000000',
+    ],
+  ])('refuses %s', (_label, unit, combos, message) => {
+    expect(validateListingInput(withCombos(unit, combos))).toContain(message);
   });
 });
 

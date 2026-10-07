@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   type Relation,
 } from 'typeorm';
+import { Listing } from '../listings/listing.entity.js';
 import { Order } from './order.entity.js';
 
 /**
@@ -23,6 +24,13 @@ export class OrderLine {
   @ManyToOne(() => Order, (order) => order.lines, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'order_id' })
   order!: Relation<Order>;
+
+  @Column({ name: 'listing_id', type: 'uuid' })
+  listingId!: string;
+
+  @ManyToOne(() => Listing)
+  @JoinColumn({ name: 'listing_id' })
+  listing!: Relation<Listing>;
 
   @Column({ name: 'listing_item_id', type: 'uuid' })
   listingItemId!: string;
@@ -46,6 +54,18 @@ export class OrderLine {
     transformer: { to: (v: number) => v, from: (v: string) => Number(v) },
   })
   lineTotal!: number;
+
+  /** unit price × quantity, before combos; equals lineTotal without them. */
+  @Column({
+    name: 'list_total',
+    type: 'bigint',
+    transformer: { to: (v: number) => v, from: (v: string) => Number(v) },
+  })
+  listTotal!: number;
+
+  /** The combos the line was priced with, copied like the unit price. */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  combos!: { quantity: string; price: number }[];
 
   @Column({ name: 'sort_order', type: 'smallint' })
   sortOrder!: number;

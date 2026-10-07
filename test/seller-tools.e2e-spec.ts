@@ -560,6 +560,7 @@ describe('Seller tools: summary, order editing, reopening', () => {
       await minh.post(`/orders/${cancelled.id}/cancel`).send({}).expect(200);
       const stock = await publish({
         mode: 'in_stock',
+        condition: 'good',
         title: 'Loa bluetooth cũ',
         categoryId: 4,
         acceptsPrepaidQr: false,
@@ -731,6 +732,7 @@ describe('Seller tools: summary, order editing, reopening', () => {
       ).body as Listing;
       const stock = await publish({
         mode: 'in_stock',
+        condition: 'good',
         title: 'Loa bluetooth cũ',
         categoryId: 4,
         acceptsPrepaidQr: false,

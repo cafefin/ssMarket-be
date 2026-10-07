@@ -5,7 +5,12 @@ import type { ListingImage } from '../listing-image.entity.js';
 import type { ListingItem } from '../listing-item.entity.js';
 import { isListingOpen } from '../listing-rules.js';
 import type { Listing } from '../listing.entity.js';
-import { ListingMode, ListingStatus } from '../listings.constants.js';
+import {
+  CONDITION_PERCENT,
+  ListingCondition,
+  ListingMode,
+  ListingStatus,
+} from '../listings.constants.js';
 import { mediaUrl, thumbnailKey } from '../media-url.js';
 
 export class ListingSellerDto {
@@ -25,6 +30,14 @@ export class ListingSellerDto {
     dto.avatarUrl = user.avatarUrl;
     return dto;
   }
+}
+
+export class ComboDto {
+  @ApiProperty({ description: 'Decimal string', example: '100' })
+  quantity!: string;
+
+  @ApiProperty({ description: 'Price of the whole combo, integer VND' })
+  price!: number;
 }
 
 export class ListingItemDto {
@@ -47,6 +60,12 @@ export class ListingItemDto {
   })
   stockQuantity!: number | null;
 
+  @ApiProperty({
+    type: [ComboDto],
+    description: '"N units for a set price", smallest first',
+  })
+  combos!: ComboDto[];
+
   static from(item: ListingItem): ListingItemDto {
     const dto = new ListingItemDto();
     dto.id = item.id;
@@ -55,8 +74,19 @@ export class ListingItemDto {
     dto.unitPrice = item.unitPrice;
     dto.stockQuantity =
       item.stockQuantity === null ? null : Number(item.stockQuantity);
+    dto.combos = (item.combos ?? [])
+      .map((combo) => ({
+        quantity: normalizeDecimal(combo.quantity),
+        price: combo.price,
+      }))
+      .sort((a, b) => Number(a.quantity) - Number(b.quantity));
     return dto;
   }
+}
+
+/** "100.000" from PostgreSQL numeric -> "100"; "2.500" -> "2.5". */
+function normalizeDecimal(value: string): string {
+  return String(Number(value));
 }
 
 export class ListingImageDto {
@@ -124,6 +154,20 @@ export class ListingDetailDto {
   orderCount!: number;
 
   @ApiProperty({
+    enum: ListingCondition,
+    enumName: 'ListingCondition',
+    nullable: true,
+  })
+  condition!: ListingCondition | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'The percentage of `condition`, e.g. 99',
+  })
+  conditionPercent!: number | null;
+
+  @ApiProperty({
     type: String,
     format: 'uuid',
     nullable: true,
@@ -153,6 +197,10 @@ export class ListingDetailDto {
     dto.deliveryDate = listing.deliveryDate;
     dto.publishedAt = listing.publishedAt?.toISOString() ?? null;
     dto.orderCount = listing.orderCount ?? 0;
+    dto.condition = listing.condition ?? null;
+    dto.conditionPercent = listing.condition
+      ? CONDITION_PERCENT[listing.condition]
+      : null;
     dto.reopenedFromId = listing.reopenedFromId ?? null;
     dto.items = listing.items
       .filter((item) => item.isActive)

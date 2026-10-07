@@ -27,8 +27,11 @@ import {
   suggestReopenDates,
   validateListingInput,
 } from './listing-rules.js';
+import type { ListingItem } from './listing-item.entity.js';
 import type { Listing } from './listing.entity.js';
 import {
+  CONDITION_PERCENT,
+  type ListingCondition,
   LISTINGS_CACHE_NAMESPACE,
   LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
@@ -52,6 +55,9 @@ export interface ListingSearchParams {
   mode?: ListingMode;
   sort?: ListingSort;
   seller?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  minCondition?: ListingCondition;
   cursor?: string;
   limit?: number;
 }
@@ -191,6 +197,10 @@ export class ListingsService {
         unitPrice: item.unitPrice,
         stockQuantity: null,
         sortOrder: index,
+        combos: (item.combos ?? []).map((combo) => ({
+          quantity: combo.quantity,
+          price: combo.price,
+        })),
       }));
     const newId = await this.listings.insert(
       {
@@ -202,6 +212,8 @@ export class ListingsService {
         description: source.description,
         acceptsPrepaidQr: source.acceptsPrepaidQr,
         acceptsPayOnDelivery: source.acceptsPayOnDelivery,
+        condition: null,
+        conditionPercent: null,
         ...suggestReopenDates(source.orderDeadline, source.deliveryDate, now),
         searchText: buildSearchText({
           title: source.title,
@@ -249,6 +261,13 @@ export class ListingsService {
       );
     }
 
+    if (
+      params.minPrice !== undefined &&
+      params.maxPrice !== undefined &&
+      params.minPrice > params.maxPrice
+    ) {
+      throw new BadRequestException('minPrice cannot be above maxPrice');
+    }
     const cursor = params.cursor ? decodeCursor(params.cursor) : null;
     const expectedKind: ListingCursor['kind'] =
       sort === ListingSort.Deadline
@@ -270,6 +289,11 @@ export class ListingsService {
     }
     const mode = params.mode ?? null;
     const sellerId = params.seller ?? null;
+    const minPrice = params.minPrice ?? null;
+    const maxPrice = params.maxPrice ?? null;
+    const minConditionPercent = params.minCondition
+      ? CONDITION_PERCENT[params.minCondition]
+      : null;
 
     const fingerprint = createHash('sha256')
       .update(
@@ -281,6 +305,9 @@ export class ListingsService {
           limit,
           sort,
           sellerId,
+          minPrice,
+          maxPrice,
+          minConditionPercent,
         ]),
       )
       .digest('hex');
@@ -296,6 +323,9 @@ export class ListingsService {
           mode,
           sort,
           sellerId,
+          minPrice,
+          maxPrice,
+          minConditionPercent,
           cursor,
           limit: limit + 1,
           now: new Date(),
@@ -353,6 +383,14 @@ export class ListingsService {
     }
 
     return ListingDetailDto.from(await this.getForViewer(viewerId, id), now);
+  }
+
+  /**
+   * Options by id with their listing, for the cart. Missing ids are left
+   * out; the caller decides what a removed option means.
+   */
+  findItems(ids: string[]): Promise<ListingItem[]> {
+    return this.listings.findItems(ids);
   }
 
   /** Any listing by id, for modules that apply their own access rules. */
@@ -417,6 +455,7 @@ export class ListingsService {
         slug: row.category_slug,
         name: row.category_name,
         nameEn: row.category_name_en,
+        isPerishable: row.category_is_perishable,
       },
       seller: {
         id: row.seller_id,
@@ -431,6 +470,11 @@ export class ListingsService {
         row.stock_quantity === null ? null : Number(row.stock_quantity),
       minUnitPrice: row.min_unit_price,
       minPriceUnit: row.min_price_unit,
+      itemCount: row.item_count,
+      hasCombos: row.has_combos,
+      singleItemId: row.single_item_id,
+      condition: row.condition,
+      conditionPercent: row.condition_percent,
       orderDeadline: row.order_deadline?.toISOString() ?? null,
       deliveryDate: row.delivery_date,
       publishedAt: row.published_at.toISOString(),
@@ -459,13 +503,13 @@ export class ListingsService {
     /** The listing's category before this edit; null when creating. */
     currentCategoryId: number | null = null,
   ): Promise<void> {
-    const problems = validateListingInput(input);
-    if (problems.length > 0) {
-      throw new BadRequestException(problems.join('; '));
-    }
     const category = await this.categories.findById(input.categoryId);
     if (!category) {
       throw new BadRequestException('Unknown category');
+    }
+    const problems = validateListingInput(input, category);
+    if (problems.length > 0) {
+      throw new BadRequestException(problems.join('; '));
     }
     // A listing already in a hidden category may stay there when edited.
     if (!category.isActive && category.id !== currentCategoryId) {
@@ -515,6 +559,10 @@ export class ListingsService {
       acceptsPayOnDelivery: input.acceptsPayOnDelivery,
       orderDeadline: input.orderDeadline,
       deliveryDate: input.deliveryDate,
+      condition: input.condition,
+      conditionPercent: input.condition
+        ? CONDITION_PERCENT[input.condition]
+        : null,
       searchText: buildSearchText(input),
     };
   }
@@ -530,6 +578,7 @@ export class ListingsService {
       unitPrice: item.unitPrice,
       stockQuantity: item.stockQuantity,
       sortOrder: index,
+      combos: item.combos,
     }));
   }
 }

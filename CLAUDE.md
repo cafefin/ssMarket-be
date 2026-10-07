@@ -33,6 +33,7 @@ src/
     ├── categories/  categories, managed by admins
     ├── listings/    listings, items, images, search, stock
     ├── orders/      orders, state rules, idempotency
+    ├── cart/        server-side cart, checkout preview and checkout
     ├── payments/    VietQR payload builder
     ├── dev-login/   development-only sign-in
     ├── storage/     StorageService (local disk today) and /media
@@ -85,7 +86,8 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 `INVALID_ORDER_STATE` (409), `REQUEST_IN_PROGRESS` (409), `OWN_LISTING` (422),
 `PAYMENT_METHOD_NOT_ACCEPTED` (422), `INVALID_QUANTITY` (422),
 `IDEMPOTENCY_KEY_REQUIRED` (400), `ORDER_NOT_EDITABLE` (409),
-`SUMMARY_TOO_LARGE` (422), `CATEGORY_EXISTS` (409), `CATEGORY_INACTIVE` (400).
+`SUMMARY_TOO_LARGE` (422), `CATEGORY_EXISTS` (409), `CATEGORY_INACTIVE` (400),
+`CART_FULL` (409), `CHECKOUT_CHANGED` (409).
 Pass structured data the frontend needs
 (which items ran out, the id of an existing order) as the `details` argument.
 
@@ -108,6 +110,25 @@ Pass structured data the frontend needs
   with its own cursor kind. It answers 400 together with `q` or
   `mode=in_stock`.
 - `GET /listings?seller=<uuid>` limits the list to one seller.
+- A listing is one product with 1–10 options (`listing_items`). Summaries
+  carry `itemCount`, `singleItemId` (set when there is exactly one option, so
+  the list can add it to a cart) and `hasCombos`.
+- `condition` (`new` 100% … `worn` 70%, `CONDITION_PERCENT`) is required for
+  in-stock goods outside perishable categories (`categories.is_perishable`)
+  and refused elsewhere; `condition_percent` is stored for filtering.
+- `GET /listings?minPrice&maxPrice` filters on the cheapest option's unit
+  price; `minCondition` keeps second-hand goods at least that good.
+
+## Combos
+
+- An option may have up to three combos: "N units for a set price"
+  (`listing_item_combos`), each cheaper than buying N singly.
+- `lineTotalWithCombos` (`listings/pricing.ts`, re-exported by
+  `orders/order-math.ts`) charges the cheapest mix of combos and single
+  units, by dynamic programming. Combos never add up across options or
+  orders; that is a coupon, for later.
+- An order line snapshots `combos` and `list_total` (retail) next to
+  `line_total`, like the unit price.
 
 ## Categories
 
@@ -124,6 +145,13 @@ Pass structured data the frontend needs
 
 ## Orders
 
+- An order's lines record their listing (`order_lines.listing_id`).
+  `orders.listing_id` is set only for pre-orders: an in-stock order from the
+  cart may hold several listings of one seller. Order counts, seller filters,
+  the summary and bulk actions go through the lines, and a summary shows only
+  its listing's part of a mixed order.
+- `OrdersService.createMany` places several orders in one transaction, all
+  or none; `POST /orders` and checkout both use it.
 - An order has two independent state axes. Payment: `unpaid` → `reported` →
   `paid`. Fulfilment: `pending` → `delivered` or `cancelled`. Delivering does
   not mark an order paid, because pay-on-delivery is often collected later.
@@ -170,6 +198,21 @@ Pass structured data the frontend needs
   draft (items, and image files as separate copies) with `reopened_from_id`
   set. It never changes the source listing or its orders.
 - `orderCount` on a listing is a database-computed virtual column.
+
+## Cart and checkout
+
+- `cart_lines` holds option and quantity per person (max 50, `CART_FULL`);
+  no price. `GET /cart` groups by seller with current prices, combos applied
+  and a `problem` per line (`LISTING_NOT_OPEN`, `ITEM_REMOVED`,
+  `OUT_OF_STOCK`). The cart never reserves stock.
+- `splitIntoOrders` (`cart/checkout-split.ts`) decides the orders: each
+  pre-order listing alone; a seller's in-stock goods together when their
+  listings share a payment method, otherwise one order per listing.
+- `POST /checkout/preview` returns those orders with a `key`, prices and
+  allowed payment methods. `POST /checkout` (`Idempotency-Key` required) sends
+  the lines and one choice per key; a different split answers
+  `CHECKOUT_CHANGED`. With `fromCart` the bought lines leave the cart in the
+  same transaction.
 
 ## Payments
 

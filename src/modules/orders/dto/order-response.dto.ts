@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { ComboDto } from '../../listings/dto/listing-response.dto.js';
 import type { User } from '../../users/user.entity.js';
 import type { OrderLine } from '../order-line.entity.js';
 import type { Order } from '../order.entity.js';
@@ -40,6 +41,12 @@ export class OrderListingDto {
 
 export class OrderLineDto {
   @ApiProperty({ format: 'uuid' })
+  listingId!: string;
+
+  @ApiProperty({ description: 'Title of the listing the option belongs to' })
+  listingTitle!: string;
+
+  @ApiProperty({ format: 'uuid' })
   itemId!: string;
 
   @ApiProperty()
@@ -56,17 +63,33 @@ export class OrderLineDto {
   @ApiProperty()
   quantity!: number;
 
-  @ApiProperty({ description: 'Integer VND' })
+  @ApiProperty({ description: 'Integer VND, after combos' })
   lineTotal!: number;
+
+  @ApiProperty({
+    description:
+      'unit price × quantity before combos; equals lineTotal without them',
+  })
+  listTotal!: number;
+
+  @ApiProperty({
+    type: [ComboDto],
+    description: 'The combos the line was priced with',
+  })
+  combos!: ComboDto[];
 
   static from(line: OrderLine): OrderLineDto {
     const dto = new OrderLineDto();
+    dto.listingId = line.listingId;
+    dto.listingTitle = line.listing?.title ?? '';
     dto.itemId = line.listingItemId;
     dto.itemName = line.itemName;
     dto.unit = line.unit;
     dto.unitPrice = line.unitPrice;
     dto.quantity = Number(line.quantity);
     dto.lineTotal = line.lineTotal;
+    dto.listTotal = line.listTotal;
+    dto.combos = line.combos;
     return dto;
   }
 }
@@ -98,8 +121,15 @@ export class OrderDetailDto {
   @ApiProperty({ example: 'SSM7K2Q9X' })
   code!: string;
 
-  @ApiProperty({ type: OrderListingDto })
+  @ApiProperty({
+    type: OrderListingDto,
+    description:
+      'The pre-order round, or for an in-stock order the listing of its first line',
+  })
   listing!: OrderListingDto;
+
+  @ApiProperty({ description: 'How many listings the lines come from' })
+  listingCount!: number;
 
   @ApiProperty({ type: OrderPersonDto })
   buyer!: OrderPersonDto;
@@ -161,12 +191,16 @@ export class OrderDetailDto {
     const dto = new OrderDetailDto();
     dto.id = order.id;
     dto.code = order.code;
+    // A pre-order has its round; an in-stock order shows its first line's
+    // listing here, and every line names its own.
+    const listing = order.listing ?? order.lines[0].listing;
     dto.listing = {
-      id: order.listing.id,
-      title: order.listing.title,
-      orderDeadline: order.listing.orderDeadline?.toISOString() ?? null,
-      deliveryDate: order.listing.deliveryDate,
+      id: listing.id,
+      title: listing.title,
+      orderDeadline: listing.orderDeadline?.toISOString() ?? null,
+      deliveryDate: listing.deliveryDate,
     };
+    dto.listingCount = new Set(order.lines.map((line) => line.listingId)).size;
     dto.buyer = OrderPersonDto.from(order.buyer);
     dto.seller = OrderPersonDto.from(order.seller);
     dto.viewerRole = viewerRole;

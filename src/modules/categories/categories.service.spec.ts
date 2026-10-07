@@ -71,6 +71,7 @@ describe('CategoriesService', () => {
       nameEn: 'Books',
       sortOrder: 7,
       isActive: true,
+      isPerishable: false,
     });
     expect(created.id).toBe(7);
     expect(cache.bumpVersion).toHaveBeenCalledWith('listings');
@@ -102,6 +103,16 @@ describe('CategoriesService', () => {
       }),
     );
     expect(cache.bumpVersion).toHaveBeenCalledWith('listings');
+  });
+
+  it('marks a category as perishable', async () => {
+    repository.findById.mockResolvedValue({ ...fresh, isPerishable: false });
+
+    await service.update(2, { isPerishable: true });
+
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 2, isPerishable: true }),
+    );
   });
 
   it('answers 404 for an unknown category', async () => {

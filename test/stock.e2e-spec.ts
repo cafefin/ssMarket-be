@@ -56,6 +56,7 @@ describe('Stock reservation', () => {
       .post('/listings')
       .send({
         mode: 'in_stock',
+        condition: 'good',
         title: 'Loa và phụ kiện',
         categoryId: 4,
         acceptsPrepaidQr: false,

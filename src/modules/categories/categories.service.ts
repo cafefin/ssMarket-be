@@ -14,6 +14,7 @@ export interface CreateCategoryInput {
   name: string;
   nameEn: string;
   sortOrder?: number;
+  isPerishable?: boolean;
 }
 
 export interface UpdateCategoryInput {
@@ -21,6 +22,7 @@ export interface UpdateCategoryInput {
   nameEn?: string;
   sortOrder?: number;
   isActive?: boolean;
+  isPerishable?: boolean;
 }
 
 @Injectable()
@@ -68,6 +70,7 @@ export class CategoriesService {
       nameEn: input.nameEn.trim(),
       sortOrder: input.sortOrder ?? (await this.categories.maxSortOrder()) + 1,
       isActive: true,
+      isPerishable: input.isPerishable ?? false,
     });
     await this.invalidateListings();
     return created;
@@ -91,6 +94,9 @@ export class CategoriesService {
     }
     if (input.isActive !== undefined) {
       category.isActive = input.isActive;
+    }
+    if (input.isPerishable !== undefined) {
+      category.isPerishable = input.isPerishable;
     }
 
     const saved = await this.categories.save(category);

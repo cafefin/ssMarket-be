@@ -1,16 +1,13 @@
 import { FRACTIONAL_UNIT } from '../listings/listings.constants.js';
+import { toThousandths } from '../listings/pricing.js';
 import { ORDER_LIMITS } from './orders.constants.js';
 
-const DECIMAL = /^\d{1,7}(\.\d{1,3})?$/;
-
-/** "1.5" -> 1500. Integers only from here on; money never touches a float. */
-export function toThousandths(quantity: string): number | null {
-  if (!DECIMAL.test(quantity)) {
-    return null;
-  }
-  const [whole, fraction = ''] = quantity.split('.');
-  return Number(whole) * 1000 + Number(fraction.padEnd(3, '0'));
-}
+export {
+  type Combo,
+  lineTotal,
+  lineTotalWithCombos,
+  toThousandths,
+} from '../listings/pricing.js';
 
 /**
  * Why a quantity cannot be ordered for an item sold in `unit`, or null when
@@ -32,15 +29,4 @@ export function quantityProblem(quantity: string, unit: string): string | null {
   return thousandths >= 1000 && thousandths % 1000 === 0
     ? null
     : 'quantity must be a whole number from 1';
-}
-
-/** unit price × quantity, rounded half up to a whole đồng. */
-export function lineTotal(unitPrice: number, quantity: string): number {
-  const thousandths = toThousandths(quantity);
-  if (thousandths === null) {
-    throw new Error(`Invalid quantity: ${quantity}`);
-  }
-  // unitPrice ≤ 10^9 and thousandths ≤ 10^7, so the product stays far below
-  // 2^53 and the arithmetic is exact.
-  return Math.floor((unitPrice * thousandths + 500) / 1000);
 }
