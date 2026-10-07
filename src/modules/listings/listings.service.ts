@@ -27,6 +27,7 @@ import {
   suggestReopenDates,
   validateListingInput,
 } from './listing-rules.js';
+import type { ListingItem } from './listing-item.entity.js';
 import type { Listing } from './listing.entity.js';
 import {
   CONDITION_PERCENT,
@@ -382,6 +383,14 @@ export class ListingsService {
     }
 
     return ListingDetailDto.from(await this.getForViewer(viewerId, id), now);
+  }
+
+  /**
+   * Options by id with their listing, for the cart. Missing ids are left
+   * out; the caller decides what a removed option means.
+   */
+  findItems(ids: string[]): Promise<ListingItem[]> {
+    return this.listings.findItems(ids);
   }
 
   /** Any listing by id, for modules that apply their own access rules. */

@@ -9,6 +9,7 @@ import { AddUserLocale1759888800000 } from './1759888800000-add-user-locale.js';
 import { AddListingCondition1759971600000 } from './1759971600000-add-listing-condition.js';
 import { AddCombos1759975200000 } from './1759975200000-add-combos.js';
 import { OrdersSpanListings1759978800000 } from './1759978800000-orders-span-listings.js';
+import { CreateCart1759982400000 } from './1759982400000-create-cart.js';
 
 // Ordered oldest first. Add every new migration class here.
 export const migrations = [
@@ -23,4 +24,5 @@ export const migrations = [
   AddListingCondition1759971600000,
   AddCombos1759975200000,
   OrdersSpanListings1759978800000,
+  CreateCart1759982400000,
 ];

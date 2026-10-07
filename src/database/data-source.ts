@@ -5,6 +5,7 @@ import { ListingImage } from '../modules/listings/listing-image.entity.js';
 import { ListingItemCombo } from '../modules/listings/listing-item-combo.entity.js';
 import { ListingItem } from '../modules/listings/listing-item.entity.js';
 import { Listing } from '../modules/listings/listing.entity.js';
+import { CartLine } from '../modules/cart/cart-line.entity.js';
 import { OrderLine } from '../modules/orders/order-line.entity.js';
 import { Order } from '../modules/orders/order.entity.js';
 import { User } from '../modules/users/user.entity.js';
@@ -24,6 +25,7 @@ export default new DataSource({
     ListingImage,
     Order,
     OrderLine,
+    CartLine,
   ],
   migrations,
 });

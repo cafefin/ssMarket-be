@@ -111,6 +111,21 @@ export class ListingsRepository {
     });
   }
 
+  /** Options by id, each with its combos and its listing (seller, photos, options). */
+  findItems(ids: string[]): Promise<ListingItem[]> {
+    if (ids.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.repository.manager.find(ListingItem, {
+      where: ids.map((id) => ({ id })),
+      relations: {
+        combos: true,
+        listing: { seller: true, images: true, items: true },
+      },
+      order: { listing: { images: { sortOrder: 'ASC' } } },
+    });
+  }
+
   findBySeller(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.repository.find({
       where: { sellerId, ...(status ? { status } : {}) },

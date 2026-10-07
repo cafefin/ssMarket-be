@@ -49,11 +49,10 @@ export class SalesSummaryService {
     // shows only this listing's part of it.
     const orders = allOrders.map((order) => {
       const lines = order.lines.filter((line) => line.listingId === listingId);
-      return {
-        ...order,
+      return Object.assign(order, {
         lines,
         totalAmount: lines.reduce((sum, line) => sum + line.lineTotal, 0),
-      };
+      });
     });
 
     // Removed items keep their column while any shown order still has them.
