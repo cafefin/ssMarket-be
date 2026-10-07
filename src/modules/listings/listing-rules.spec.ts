@@ -6,7 +6,11 @@ import {
   type ListingItemInput,
   validateListingInput,
 } from './listing-rules.js';
-import { ListingMode, ListingStatus } from './listings.constants.js';
+import {
+  ListingCondition,
+  ListingMode,
+  ListingStatus,
+} from './listings.constants.js';
 import { mediaUrl, thumbnailKey } from './media-url.js';
 import { buildSearchText } from './search-text.js';
 
@@ -27,6 +31,7 @@ const inStock = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   acceptsPayOnDelivery: true,
   orderDeadline: null,
   deliveryDate: null,
+  condition: ListingCondition.LikeNew,
   items: [item()],
   ...overrides,
 });
@@ -41,6 +46,7 @@ const preorder = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   // 17:00 on 9 Oct in Vietnam
   orderDeadline: new Date('2026-10-09T10:00:00Z'),
   deliveryDate: '2026-10-12',
+  condition: null,
   items: [
     item({
       name: 'Cam sành',
@@ -74,11 +80,11 @@ describe('validateListingInput', () => {
       inStock({ description: 'a'.repeat(5001) }),
       'description must be at most 5000 characters',
     ],
-    ['no items', inStock({ items: [] }), 'a listing needs 1-20 items'],
+    ['no items', inStock({ items: [] }), 'a listing needs 1-10 items'],
     [
       'too many items',
-      inStock({ items: Array.from({ length: 21 }, () => item()) }),
-      'a listing needs 1-20 items',
+      inStock({ items: Array.from({ length: 11 }, () => item()) }),
+      'a listing needs 1-10 items',
     ],
     [
       'no payment method',
@@ -198,6 +204,38 @@ describe('validateListingInput', () => {
     );
 
     expect(problems).toHaveLength(3);
+  });
+});
+
+describe('condition', () => {
+  it('accepts ten options and the condition of in-stock goods', () => {
+    expect(
+      validateListingInput(
+        inStock({ items: Array.from({ length: 10 }, () => item()) }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('requires a condition for in-stock goods outside food', () => {
+    expect(validateListingInput(inStock({ condition: null }))).toEqual([
+      'in-stock goods need a condition',
+    ]);
+  });
+
+  it('refuses a condition on pre-orders and on food', () => {
+    const message =
+      'only in-stock goods outside food categories have a condition';
+    expect(
+      validateListingInput(preorder({ condition: ListingCondition.New })),
+    ).toEqual([message]);
+    expect(
+      validateListingInput(inStock(), { isPerishable: true }),
+    ).toEqual([message]);
+    expect(
+      validateListingInput(inStock({ condition: null }), {
+        isPerishable: true,
+      }),
+    ).toEqual([]);
   });
 });
 

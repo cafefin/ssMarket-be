@@ -15,6 +15,7 @@ export class AdminCategoryDto extends CategoryResponseDto {
     dto.slug = category.slug;
     dto.name = category.name;
     dto.nameEn = category.nameEn;
+    dto.isPerishable = category.isPerishable;
     dto.sortOrder = category.sortOrder;
     dto.isActive = category.isActive;
     return dto;

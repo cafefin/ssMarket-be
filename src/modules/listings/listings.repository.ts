@@ -7,6 +7,7 @@ import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
 import {
   ListingSort,
+  type ListingCondition,
   type ListingMode,
   type ListingStatus,
 } from './listings.constants.js';
@@ -24,6 +25,8 @@ export interface ListingFields {
   orderDeadline: Date | null;
   deliveryDate: string | null;
   searchText: string;
+  condition: ListingCondition | null;
+  conditionPercent: number | null;
   publishedAt: Date | null;
   closedAt: Date | null;
   /** The listing this one was reopened from, if any. */
@@ -64,6 +67,11 @@ export interface OpenListingRow {
   category_slug: string;
   category_name: string;
   category_name_en: string;
+  category_is_perishable: boolean;
+  condition: ListingCondition | null;
+  condition_percent: number | null;
+  item_count: number;
+  single_item_id: string | null;
   seller_id: string;
   seller_name: string;
   seller_avatar_url: string | null;
@@ -230,7 +238,10 @@ export class ListingsRepository {
         to_char(l.delivery_date, 'YYYY-MM-DD') AS delivery_date,
         l.published_at,
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
-        c.name_en AS category_name_en,
+        c.name_en AS category_name_en, c.is_perishable AS category_is_perishable,
+        l.condition, l.condition_percent,
+        stock.item_count,
+        CASE WHEN stock.item_count = 1 THEN stock.only_id END AS single_item_id,
         u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
         cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
@@ -250,7 +261,8 @@ export class ListingsRepository {
         WHERE listing_id = l.id AND is_active ORDER BY unit_price, sort_order LIMIT 1
       ) cheapest ON true
       JOIN LATERAL (
-        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock
+        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock,
+               MIN(id::text)::uuid AS only_id
         FROM listing_items WHERE listing_id = l.id AND is_active
       ) stock ON true
       WHERE ${where.join(' AND ')}

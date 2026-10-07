@@ -29,6 +29,7 @@ import {
 } from './listing-rules.js';
 import type { Listing } from './listing.entity.js';
 import {
+  CONDITION_PERCENT,
   LISTINGS_CACHE_NAMESPACE,
   LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
@@ -202,6 +203,8 @@ export class ListingsService {
         description: source.description,
         acceptsPrepaidQr: source.acceptsPrepaidQr,
         acceptsPayOnDelivery: source.acceptsPayOnDelivery,
+        condition: null,
+        conditionPercent: null,
         ...suggestReopenDates(source.orderDeadline, source.deliveryDate, now),
         searchText: buildSearchText({
           title: source.title,
@@ -417,6 +420,7 @@ export class ListingsService {
         slug: row.category_slug,
         name: row.category_name,
         nameEn: row.category_name_en,
+        isPerishable: row.category_is_perishable,
       },
       seller: {
         id: row.seller_id,
@@ -431,6 +435,10 @@ export class ListingsService {
         row.stock_quantity === null ? null : Number(row.stock_quantity),
       minUnitPrice: row.min_unit_price,
       minPriceUnit: row.min_price_unit,
+      itemCount: row.item_count,
+      singleItemId: row.single_item_id,
+      condition: row.condition,
+      conditionPercent: row.condition_percent,
       orderDeadline: row.order_deadline?.toISOString() ?? null,
       deliveryDate: row.delivery_date,
       publishedAt: row.published_at.toISOString(),
@@ -459,13 +467,13 @@ export class ListingsService {
     /** The listing's category before this edit; null when creating. */
     currentCategoryId: number | null = null,
   ): Promise<void> {
-    const problems = validateListingInput(input);
-    if (problems.length > 0) {
-      throw new BadRequestException(problems.join('; '));
-    }
     const category = await this.categories.findById(input.categoryId);
     if (!category) {
       throw new BadRequestException('Unknown category');
+    }
+    const problems = validateListingInput(input, category);
+    if (problems.length > 0) {
+      throw new BadRequestException(problems.join('; '));
     }
     // A listing already in a hidden category may stay there when edited.
     if (!category.isActive && category.id !== currentCategoryId) {
@@ -515,6 +523,10 @@ export class ListingsService {
       acceptsPayOnDelivery: input.acceptsPayOnDelivery,
       orderDeadline: input.orderDeadline,
       deliveryDate: input.deliveryDate,
+      condition: input.condition,
+      conditionPercent: input.condition
+        ? CONDITION_PERCENT[input.condition]
+        : null,
       searchText: buildSearchText(input),
     };
   }

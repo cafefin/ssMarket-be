@@ -56,6 +56,7 @@ describe('Orders API', () => {
   const inStock = (overrides: object = {}) =>
     createListing({
       mode: 'in_stock',
+      condition: 'good',
       title: 'Loa và phụ kiện',
       categoryId: 4,
       acceptsPrepaidQr: true,
@@ -786,6 +787,7 @@ describe('Orders API', () => {
     const edit = (listing: Listing, items: object[]) =>
       seller.patch(`/listings/${listing.id}`).send({
         mode: 'in_stock',
+        condition: 'good',
         title: 'Loa và phụ kiện',
         categoryId: 4,
         acceptsPrepaidQr: true,

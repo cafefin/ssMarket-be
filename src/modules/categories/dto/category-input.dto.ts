@@ -26,6 +26,11 @@ export class CreateCategoryDto {
   @Length(1, 40)
   nameEn!: string;
 
+  @ApiPropertyOptional({ description: 'Food: listings have no condition' })
+  @IsOptional()
+  @IsBoolean()
+  isPerishable?: boolean;
+
   @ApiPropertyOptional({ description: 'Defaults to the end of the list' })
   @IsOptional()
   @IsInt()
@@ -60,4 +65,9 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({ description: 'Food: listings have no condition' })
+  @IsOptional()
+  @IsBoolean()
+  isPerishable?: boolean;
 }

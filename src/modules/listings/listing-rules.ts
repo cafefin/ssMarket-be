@@ -3,6 +3,7 @@ import {
   FRACTIONAL_UNIT,
   LISTING_LIMITS,
   LISTING_UNITS,
+  ListingCondition,
   ListingMode,
   ListingStatus,
 } from './listings.constants.js';
@@ -28,7 +29,15 @@ export interface ListingInput {
   orderDeadline: Date | null;
   /** Calendar date, YYYY-MM-DD. */
   deliveryDate: string | null;
+  /** Second-hand condition; only for in-stock goods outside food categories. */
+  condition: ListingCondition | null;
   items: ListingItemInput[];
+}
+
+/** What validation needs to know about the chosen category. */
+export interface ListingCategoryFacts {
+  /** Food and other goods that go off: they have no "condition". */
+  isPerishable: boolean;
 }
 
 const DECIMAL = /^\d{1,7}(\.\d{1,3})?$/;
@@ -111,7 +120,10 @@ function itemProblems(
  * list of problems, empty when the input is valid. Whether the deadline is
  * still in the future is checked when publishing, not here.
  */
-export function validateListingInput(input: ListingInput): string[] {
+export function validateListingInput(
+  input: ListingInput,
+  category: ListingCategoryFacts = { isPerishable: false },
+): string[] {
   const problems: string[] = [];
   const title = input.title.trim();
 
@@ -160,6 +172,14 @@ export function validateListingInput(input: ListingInput): string[] {
     ) {
       problems.push('delivery date cannot be before the order deadline');
     }
+  }
+
+  const needsCondition =
+    input.mode === ListingMode.InStock && !category.isPerishable;
+  if (needsCondition && input.condition === null) {
+    problems.push('in-stock goods need a condition');
+  } else if (!needsCondition && input.condition !== null) {
+    problems.push('only in-stock goods outside food categories have a condition');
   }
 
   input.items.forEach((item, index) => {

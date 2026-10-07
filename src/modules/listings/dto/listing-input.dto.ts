@@ -15,7 +15,11 @@ import {
   ValidateNested,
 } from 'class-validator';
 import type { ListingInput } from '../listing-rules.js';
-import { LISTING_UNITS, ListingMode } from '../listings.constants.js';
+import {
+  LISTING_UNITS,
+  ListingCondition,
+  ListingMode,
+} from '../listings.constants.js';
 
 // These classes check shape and types only. Business rules live in
 // validateListingInput so they are tested without HTTP.
@@ -107,6 +111,17 @@ export class ListingInputDto {
   })
   deliveryDate?: string | null;
 
+  @ApiPropertyOptional({
+    enum: ListingCondition,
+    enumName: 'ListingCondition',
+    nullable: true,
+    description:
+      'Required for in-stock goods outside food categories; null otherwise',
+  })
+  @IsOptional()
+  @IsEnum(ListingCondition)
+  condition?: ListingCondition | null;
+
   @ApiProperty({ type: [ListingItemInputDto] })
   @IsArray()
   @ArrayMaxSize(100)
@@ -124,6 +139,7 @@ export class ListingInputDto {
       acceptsPayOnDelivery: this.acceptsPayOnDelivery,
       orderDeadline: this.orderDeadline ? new Date(this.orderDeadline) : null,
       deliveryDate: this.deliveryDate ?? null,
+      condition: this.condition ?? null,
       items: this.items.map((item) => ({
         id: item.id,
         name: item.name,

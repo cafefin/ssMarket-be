@@ -5,7 +5,12 @@ import type { ListingImage } from '../listing-image.entity.js';
 import type { ListingItem } from '../listing-item.entity.js';
 import { isListingOpen } from '../listing-rules.js';
 import type { Listing } from '../listing.entity.js';
-import { ListingMode, ListingStatus } from '../listings.constants.js';
+import {
+  CONDITION_PERCENT,
+  ListingCondition,
+  ListingMode,
+  ListingStatus,
+} from '../listings.constants.js';
 import { mediaUrl, thumbnailKey } from '../media-url.js';
 
 export class ListingSellerDto {
@@ -124,6 +129,20 @@ export class ListingDetailDto {
   orderCount!: number;
 
   @ApiProperty({
+    enum: ListingCondition,
+    enumName: 'ListingCondition',
+    nullable: true,
+  })
+  condition!: ListingCondition | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'The percentage of `condition`, e.g. 99',
+  })
+  conditionPercent!: number | null;
+
+  @ApiProperty({
     type: String,
     format: 'uuid',
     nullable: true,
@@ -153,6 +172,10 @@ export class ListingDetailDto {
     dto.deliveryDate = listing.deliveryDate;
     dto.publishedAt = listing.publishedAt?.toISOString() ?? null;
     dto.orderCount = listing.orderCount ?? 0;
+    dto.condition = listing.condition ?? null;
+    dto.conditionPercent = listing.condition
+      ? CONDITION_PERCENT[listing.condition]
+      : null;
     dto.reopenedFromId = listing.reopenedFromId ?? null;
     dto.items = listing.items
       .filter((item) => item.isActive)

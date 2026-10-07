@@ -14,12 +14,18 @@ export class CategoryResponseDto {
   @ApiProperty({ example: 'Fresh food' })
   nameEn!: string;
 
+  @ApiProperty({
+    description: 'Food and other goods that go off; no condition is asked',
+  })
+  isPerishable!: boolean;
+
   static from(category: Category): CategoryResponseDto {
     const dto = new CategoryResponseDto();
     dto.id = category.id;
     dto.slug = category.slug;
     dto.name = category.name;
     dto.nameEn = category.nameEn;
+    dto.isPerishable = category.isPerishable;
     return dto;
   }
 }

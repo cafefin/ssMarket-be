@@ -10,6 +10,7 @@ import type { UsersService } from '../users/users.service.js';
 import type { ListingInput } from './listing-rules.js';
 import { Listing } from './listing.entity.js';
 import {
+  ListingCondition,
   ListingMode,
   ListingSort,
   ListingStatus,
@@ -32,6 +33,7 @@ function input(overrides: Partial<ListingInput> = {}): ListingInput {
     acceptsPayOnDelivery: true,
     orderDeadline: null,
     deliveryDate: null,
+    condition: ListingCondition.Good,
     items: [
       {
         name: ' Loa JBL ',
@@ -141,7 +143,7 @@ describe('ListingsService', () => {
       await expect(
         service.create(SELLER, input({ title: 'abc', items: [] })),
       ).rejects.toThrow(
-        'title must be 5-120 characters; a listing needs 1-20 items',
+        'title must be 5-120 characters; a listing needs 1-10 items',
       );
       expect(repository.insert).not.toHaveBeenCalled();
     });

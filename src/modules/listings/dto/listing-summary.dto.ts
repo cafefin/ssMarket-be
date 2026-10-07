@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { CategoryResponseDto } from '../../categories/dto/category-response.dto.js';
-import { ListingMode } from '../listings.constants.js';
+import { ListingCondition, ListingMode } from '../listings.constants.js';
 import { ListingSellerDto } from './listing-response.dto.js';
 
 export class ListingSummaryDto {
@@ -41,6 +41,29 @@ export class ListingSummaryDto {
       'that has a stock limit; null otherwise',
   })
   stockQuantity!: number | null;
+
+  @ApiProperty({ description: 'Active options (items) of the listing' })
+  itemCount!: number;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'The id of the only option when there is exactly one, so the list can ' +
+      'add it to the cart directly; null otherwise',
+  })
+  singleItemId!: string | null;
+
+  @ApiProperty({
+    enum: ListingCondition,
+    enumName: 'ListingCondition',
+    nullable: true,
+  })
+  condition!: ListingCondition | null;
+
+  @ApiProperty({ type: Number, nullable: true, example: 99 })
+  conditionPercent!: number | null;
 
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   orderDeadline!: string | null;
