@@ -13,12 +13,12 @@ import { ListingMode } from '../listings/listings.constants.js';
 import { ListingsService } from '../listings/listings.service.js';
 import { buildVietQrPayload } from '../payments/vietqr.js';
 import { UsersService } from '../users/users.service.js';
+import { combosOf } from '../listings/dto/listing-response.dto.js';
 import {
   OrderDetailDto,
   type OrderPageDto,
   type OrderQrDto,
 } from './dto/order-response.dto.js';
-import { IdempotencyService } from './idempotency.service.js';
 import { generateOrderCode } from './order-code.js';
 import { decodeOrderCursor, encodeOrderCursor } from './order-cursor.js';
 import {
@@ -49,30 +49,28 @@ import {
   type SalesFilters,
 } from './orders.repository.js';
 
-export type EditOrderInput = Omit<PlaceOrderInput, 'listingId'>;
-
-/** Price and labels of a line as they were when the order was placed. */
-interface LineSnapshot {
-  itemName: string;
-  unit: string;
-  unitPrice: number;
-  combos: Combo[];
-}
-
-export interface PlaceOrderInput {
-  listingId: string;
-  lines: { itemId: string; quantity: string }[];
+/** A buyer's change to their pre-order. */
+export interface EditOrderInput {
+  quantity: string;
   paymentMethod: PaymentMethod;
   deliveryLocation: string;
   note?: string | null;
 }
 
+/** Price and labels of a line as they were when the order was placed. */
+interface LineSnapshot {
+  title: string;
+  unit: string;
+  unitPrice: number;
+  combos: Combo[];
+}
+
 /**
- * One order to create: lines from a single pre-order listing, or from one or
- * more in-stock listings of the same seller.
+ * One order to create: one pre-order product, or one or more in-stock
+ * products of the same seller.
  */
 export interface OrderRequest {
-  lines: { listingId: string; itemId: string; quantity: string }[];
+  lines: { listingId: string; quantity: string }[];
   paymentMethod: PaymentMethod;
   deliveryLocation: string;
   note?: string | null;
@@ -84,14 +82,13 @@ interface OrderPlan {
   /** Set for a pre-order: the round the order belongs to. */
   preorderListingId: string | null;
   lines: NewOrderLine[];
-  /** Option id -> name, to explain a shortage. */
-  itemNames: Map<string, string>;
+  /** Listing id -> title, to explain a shortage. */
+  titles: Map<string, string>;
   paymentMethod: PaymentMethod;
   deliveryLocation: string;
   note: string | null;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PAGE_SIZE = 20;
 const CODE_ATTEMPTS = 5;
 
@@ -103,45 +100,7 @@ export class OrdersService {
     private readonly users: UsersService,
     private readonly banks: BanksService,
     private readonly transactions: TransactionRunner,
-    private readonly idempotency: IdempotencyService,
   ) {}
-
-  /**
-   * Places an order. `replayed` is true when the same idempotency key had
-   * already produced an order, which is returned instead of a second one.
-   */
-  async place(
-    buyerId: string,
-    input: PlaceOrderInput,
-    idempotencyKey: string | undefined,
-  ): Promise<{ order: OrderDetailDto; replayed: boolean }> {
-    if (!idempotencyKey || !UUID.test(idempotencyKey)) {
-      throw new DomainException(
-        400,
-        'IDEMPOTENCY_KEY_REQUIRED',
-        'Send a UUID in the Idempotency-Key header',
-      );
-    }
-
-    const { value, replayed } = await this.idempotency.run(
-      `order:${buyerId}`,
-      idempotencyKey,
-      async () => {
-        const [id] = await this.createMany(buyerId, [
-          {
-            ...input,
-            lines: input.lines.map((line) => ({
-              ...line,
-              listingId: input.listingId,
-            })),
-          },
-        ]);
-        return { id, value: id };
-      },
-      (id) => Promise.resolve(id),
-    );
-    return { order: await this.getForParticipant(buyerId, value), replayed };
-  }
 
   /**
    * Creates several orders at once, for a checkout: all of them or none.
@@ -216,8 +175,8 @@ export class OrdersService {
 
   /**
    * Lets a buyer change a pre-order until its deadline, like editing their
-   * row in the spreadsheet this replaces. Items already in the order keep
-   * the price they were ordered at; items added now use the current price.
+   * row in the spreadsheet this replaces. The product keeps the price it was
+   * ordered at.
    */
   async edit(
     buyerId: string,
@@ -254,21 +213,15 @@ export class OrdersService {
       const deliveryLocation = this.cleanDeliveryLocation(
         input.deliveryLocation,
       );
-      const lines = this.buildLines(
-        listing,
-        input.lines,
-        new Map(
-          order.lines.map((line) => [
-            line.listingItemId,
-            {
-              itemName: line.itemName,
-              unit: line.unit,
-              unitPrice: line.unitPrice,
-              combos: line.combos,
-            },
-          ]),
-        ),
-      );
+      const [ordered] = order.lines;
+      const lines = [
+        this.buildLine(listing, input.quantity, 0, {
+          title: ordered.title,
+          unit: ordered.unit,
+          unitPrice: ordered.unitPrice,
+          combos: ordered.combos,
+        }),
+      ];
 
       const qr = input.paymentMethod === PaymentMethod.PrepaidQr;
       await this.orders.replaceLines(tx, id, lines, {
@@ -347,7 +300,7 @@ export class OrdersService {
         await this.listings.releaseStock(
           tx,
           order.lines.map((line) => ({
-            itemId: line.listingItemId,
+            listingId: line.listingId,
             quantity: line.quantity,
           })),
         );
@@ -397,9 +350,10 @@ export class OrdersService {
     buyerId: string,
     request: OrderRequest,
   ): Promise<OrderPlan> {
-    const listingIds = [
-      ...new Set(request.lines.map((line) => line.listingId)),
-    ];
+    const listingIds = request.lines.map((line) => line.listingId);
+    if (new Set(listingIds).size !== listingIds.length) {
+      throw new BadRequestException('A product appears twice in one order');
+    }
     const now = new Date();
     const listings: Listing[] = [];
     for (const id of listingIds) {
@@ -450,18 +404,9 @@ export class OrdersService {
         { problems: [`an order needs 1-${ORDER_LIMITS.linesMax} lines`] },
       );
     }
-    const lines: NewOrderLine[] = [];
-    for (const listing of listings) {
-      lines.push(
-        ...this.buildLines(
-          listing,
-          request.lines.filter((line) => line.listingId === listing.id),
-        ),
-      );
-    }
-    lines.forEach((line, index) => {
-      line.sortOrder = index;
-    });
+    const lines = request.lines.map((line, index) =>
+      this.buildLine(listings[index], line.quantity, index),
+    );
 
     if (preorder) {
       const existing = await this.orders.findActivePreorder(
@@ -477,11 +422,7 @@ export class OrdersService {
       seller: listings[0].seller,
       preorderListingId: preorder?.id ?? null,
       lines,
-      itemNames: new Map(
-        listings.flatMap((listing) =>
-          listing.items.map((item) => [item.id, item.name] as const),
-        ),
-      ),
+      titles: new Map(listings.map((listing) => [listing.id, listing.title])),
       paymentMethod: request.paymentMethod,
       deliveryLocation: this.cleanDeliveryLocation(request.deliveryLocation),
       note: request.note?.trim() || null,
@@ -516,82 +457,41 @@ export class OrdersService {
   }
 
   /**
-   * Validates the requested lines and prices them from the listing's data.
-   * When editing, `snapshots` holds the lines the order already has: those
-   * items stay orderable at their original price even if the seller has
-   * since changed or removed them.
+   * Prices one line from the listing's data, or from `snapshot` when an
+   * existing order is edited, so it keeps the price it was ordered at.
    */
-  private buildLines(
+  private buildLine(
     listing: Listing,
-    requested: PlaceOrderInput['lines'],
-    snapshots: Map<string, LineSnapshot> = new Map(),
-  ): NewOrderLine[] {
-    const items = new Map<string, LineSnapshot & { id: string }>();
-    for (const item of listing.items) {
-      const snapshot = snapshots.get(item.id);
-      if (snapshot) {
-        items.set(item.id, { id: item.id, ...snapshot });
-      } else if (item.isActive) {
-        items.set(item.id, {
-          id: item.id,
-          itemName: item.name,
-          unit: item.unit,
-          unitPrice: item.unitPrice,
-          combos: (item.combos ?? []).map((combo) => ({
-            quantity: String(Number(combo.quantity)),
-            price: combo.price,
-          })),
-        });
-      }
-    }
-    const problems: string[] = [];
-    const seen = new Set<string>();
-    const lines: NewOrderLine[] = [];
-
-    if (requested.length < 1 || requested.length > ORDER_LIMITS.linesMax) {
-      problems.push(`an order needs 1-${ORDER_LIMITS.linesMax} lines`);
-    }
-    requested.forEach((line, index) => {
-      const item = items.get(line.itemId);
-      if (!item) {
-        problems.push(`line ${index + 1}: this item cannot be ordered`);
-        return;
-      }
-      if (seen.has(item.id)) {
-        problems.push(`line ${index + 1}: ${item.itemName} appears twice`);
-        return;
-      }
-      seen.add(item.id);
-
-      const problem = quantityProblem(line.quantity, item.unit);
-      if (problem) {
-        problems.push(`line ${index + 1}: ${problem}`);
-        return;
-      }
-      lines.push({
-        listingId: listing.id,
-        listingItemId: item.id,
-        itemName: item.itemName,
-        unit: item.unit,
-        unitPrice: item.unitPrice,
-        quantity: line.quantity,
-        lineTotal: lineTotalWithCombos(
-          item.unitPrice,
-          item.combos,
-          line.quantity,
-        ),
-        listTotal: lineTotal(item.unitPrice, line.quantity),
-        combos: item.combos,
-        sortOrder: index,
-      });
-    });
-
-    if (problems.length > 0) {
-      throw new DomainException(422, 'INVALID_QUANTITY', problems.join('; '), {
-        problems,
+    quantity: string,
+    sortOrder: number,
+    snapshot: LineSnapshot = {
+      title: listing.title,
+      unit: listing.unit,
+      unitPrice: listing.unitPrice,
+      combos: combosOf(listing.combos),
+    },
+  ): NewOrderLine {
+    const problem = quantityProblem(quantity, snapshot.unit);
+    if (problem) {
+      throw new DomainException(422, 'INVALID_QUANTITY', problem, {
+        problems: [problem],
       });
     }
-    return lines;
+    return {
+      listingId: listing.id,
+      title: snapshot.title,
+      unit: snapshot.unit,
+      unitPrice: snapshot.unitPrice,
+      quantity,
+      lineTotal: lineTotalWithCombos(
+        snapshot.unitPrice,
+        snapshot.combos,
+        quantity,
+      ),
+      listTotal: lineTotal(snapshot.unitPrice, quantity),
+      combos: snapshot.combos,
+      sortOrder,
+    };
   }
 
   private async insertWithUniqueCodes(
@@ -599,7 +499,7 @@ export class OrdersService {
     plans: OrderPlan[],
     withinTransaction?: (tx: Tx) => Promise<void>,
   ): Promise<string[]> {
-    const names = new Map(plans.flatMap((plan) => [...plan.itemNames]));
+    const titles = new Map(plans.flatMap((plan) => [...plan.titles]));
 
     for (let attempt = 1; ; attempt += 1) {
       try {
@@ -608,7 +508,7 @@ export class OrdersService {
             tx,
             plans.flatMap((plan) =>
               plan.lines.map((line) => ({
-                itemId: line.listingItemId,
+                listingId: line.listingId,
                 quantity: line.quantity,
               })),
             ),
@@ -618,11 +518,11 @@ export class OrdersService {
             throw new DomainException(
               409,
               'OUT_OF_STOCK',
-              'Some items do not have enough stock',
+              'Some products do not have enough stock',
               {
                 items: short.map((item) => ({
-                  itemId: item.itemId,
-                  name: names.get(item.itemId),
+                  listingId: item.listingId,
+                  title: titles.get(item.listingId),
                   available: Number(item.available),
                 })),
               },

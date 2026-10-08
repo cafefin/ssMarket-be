@@ -7,15 +7,14 @@ import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
 
-type Item = { id: string; name: string; stockQuantity: number | null };
-type Listing = { id: string; items: Item[] };
+type Listing = { id: string; stockQuantity: number | null };
 type PreviewOrder = {
   key: string;
   isPreorder: boolean;
   totalAmount: number;
   listTotal: number;
   paymentMethods: string[];
-  lines: Array<{ itemId: string; lineTotal: number }>;
+  lines: Array<{ listingId: string; lineTotal: number }>;
 };
 
 const bank = {
@@ -42,7 +41,7 @@ describe('Cart and checkout', () => {
   const gadget = (
     agent: TestAgent,
     title: string,
-    items: object[],
+    product: { unitPrice: number; stockQuantity: string; combos?: object[] },
     overrides: object = {},
   ) =>
     open(agent, {
@@ -53,7 +52,8 @@ describe('Cart and checkout', () => {
       // Only seller A has bank details for QR payments.
       acceptsPrepaidQr: agent === sellerA,
       acceptsPayOnDelivery: true,
-      items,
+      unit: 'cái',
+      ...product,
       ...overrides,
     });
   const fruit = (agent: TestAgent) =>
@@ -67,13 +67,14 @@ describe('Cart and checkout', () => {
       deliveryDate: new Date(Date.now() + 5 * 86_400_000)
         .toISOString()
         .slice(0, 10),
-      items: [{ name: 'Cam', unit: 'kg', unitPrice: 35000 }],
+      unit: 'kg',
+      unitPrice: 35000,
     });
-  const add = (itemId: string, quantity: string) =>
-    buyer.put(`/cart/lines/${itemId}`).send({ quantity });
+  const add = (listingId: string, quantity: string) =>
+    buyer.put(`/cart/lines/${listingId}`).send({ quantity });
   const stockOf = async (listing: Listing, agent: TestAgent) =>
     ((await agent.get(`/listings/${listing.id}`).expect(200)).body as Listing)
-      .items[0].stockQuantity;
+      .stockQuantity;
   const countOrders = async (): Promise<number> => {
     const rows: Array<{ count: string }> = await dataSource.query(
       'SELECT COUNT(*) AS count FROM orders',
@@ -106,30 +107,27 @@ describe('Cart and checkout', () => {
       await request(app.getHttpServer()).get('/cart').expect(401);
     });
 
-    it('keeps options grouped by seller with current prices', async () => {
-      const pens = await gadget(sellerA, 'Bút bi Thiên Long', [
-        {
-          name: 'Bút bi',
-          unit: 'cái',
-          unitPrice: 10000,
-          stockQuantity: '500',
-          combos: [{ quantity: '100', price: 900000 }],
-        },
-      ]);
-      const mouse = await gadget(sellerB, 'Chuột không dây', [
-        { name: 'Chuột', unit: 'cái', unitPrice: 200000, stockQuantity: '2' },
-      ]);
+    it('keeps products grouped by seller with current prices', async () => {
+      const pens = await gadget(sellerA, 'Bút bi Thiên Long', {
+        unitPrice: 10000,
+        stockQuantity: '500',
+        combos: [{ quantity: '100', price: 900000 }],
+      });
+      const mouse = await gadget(sellerB, 'Chuột không dây', {
+        unitPrice: 200000,
+        stockQuantity: '2',
+      });
 
-      await add(pens.items[0].id, '120').expect(200);
-      await add(mouse.items[0].id, '1').expect(200);
-      await add(pens.items[0].id, '130').expect(200);
+      await add(pens.id, '120').expect(200);
+      await add(mouse.id, '1').expect(200);
+      await add(pens.id, '130').expect(200);
 
       const cart = (await buyer.get('/cart').expect(200)).body;
       expect(cart.lineCount).toBe(2);
       expect(cart.groups).toHaveLength(2);
       const penLine = cart.groups
         .flatMap((group: { lines: object[] }) => group.lines)
-        .find((line: { itemId: string }) => line.itemId === pens.items[0].id);
+        .find((line: { listingId: string }) => line.listingId === pens.id);
       expect(penLine).toMatchObject({
         quantity: 130,
         lineTotal: 1_200_000,
@@ -140,36 +138,56 @@ describe('Cart and checkout', () => {
         count: 2,
       });
 
-      await buyer.delete(`/cart/lines/${mouse.items[0].id}`).expect(200);
+      await buyer.delete(`/cart/lines/${mouse.id}`).expect(200);
       expect((await buyer.get('/cart/count').expect(200)).body.count).toBe(1);
     });
 
     it('refuses own goods, closed listings and bad quantities', async () => {
-      const mine = await gadget(buyer, 'Đồ của tôi', [
-        { name: 'Sách', unit: 'cái', unitPrice: 50000, stockQuantity: '1' },
-      ]);
-      const own = await add(mine.items[0].id, '1').expect(422);
+      const mine = await gadget(buyer, 'Đồ của tôi', {
+        unitPrice: 50000,
+        stockQuantity: '1',
+      });
+      const own = await add(mine.id, '1').expect(422);
       expect(own.body.code).toBe('OWN_LISTING');
 
-      const pens = await gadget(sellerA, 'Bút chì 2B', [
-        { name: 'Bút', unit: 'cái', unitPrice: 10000, stockQuantity: '5' },
-      ]);
-      const half = await add(pens.items[0].id, '0.5').expect(422);
+      const pens = await gadget(sellerA, 'Bút chì 2B', {
+        unitPrice: 10000,
+        stockQuantity: '5',
+      });
+      const half = await add(pens.id, '0.5').expect(422);
       expect(half.body.code).toBe('INVALID_QUANTITY');
 
       await sellerA.post(`/listings/${pens.id}/close`).expect(200);
-      const closed = await add(pens.items[0].id, '1').expect(409);
+      const closed = await add(pens.id, '1').expect(409);
       expect(closed.body.code).toBe('LISTING_NOT_OPEN');
     });
 
+    it('refuses more than the stock that is left', async () => {
+      const last = await gadget(sellerA, 'Loa cuối cùng', {
+        unitPrice: 500000,
+        stockQuantity: '1',
+      });
+
+      await add(last.id, '1').expect(200);
+      const twice = await add(last.id, '2').expect(409);
+
+      expect(twice.body).toMatchObject({
+        code: 'OUT_OF_STOCK',
+        details: { items: [{ listingId: last.id, available: 1 }] },
+      });
+      const cart = (await buyer.get('/cart').expect(200)).body;
+      expect(cart.groups[0].lines[0].quantity).toBe(1);
+    });
+
     it('flags a line whose listing closed or ran short after it was added', async () => {
-      const pens = await gadget(sellerA, 'Bút chì 2B', [
-        { name: 'Bút', unit: 'cái', unitPrice: 10000, stockQuantity: '5' },
-      ]);
-      await add(pens.items[0].id, '5').expect(200);
+      const pens = await gadget(sellerA, 'Bút chì 2B', {
+        unitPrice: 10000,
+        stockQuantity: '5',
+      });
+      await add(pens.id, '5').expect(200);
       await dataSource.query(
-        'UPDATE listing_items SET stock_quantity = 2 WHERE id = $1',
-        [pens.items[0].id],
+        'UPDATE listings SET stock_quantity = 2 WHERE id = $1',
+        [pens.id],
       );
       let line = (await buyer.get('/cart').expect(200)).body.groups[0].lines[0];
       expect(line.problem).toBe('OUT_OF_STOCK');
@@ -182,28 +200,30 @@ describe('Cart and checkout', () => {
 
   describe('checkout', () => {
     it('previews one order per seller and one per pre-order round', async () => {
-      const speaker = await gadget(sellerA, 'Loa bluetooth', [
-        { name: 'Loa', unit: 'cái', unitPrice: 500000, stockQuantity: '3' },
-      ]);
+      const speaker = await gadget(sellerA, 'Loa bluetooth', {
+        unitPrice: 500000,
+        stockQuantity: '3',
+      });
       const cable = await gadget(
         sellerA,
         'Dây cáp',
-        [{ name: 'Dây', unit: 'cái', unitPrice: 30000, stockQuantity: '9' }],
+        { unitPrice: 30000, stockQuantity: '9' },
         { acceptsPrepaidQr: false },
       );
       const oranges = await fruit(sellerA);
-      const mouse = await gadget(sellerB, 'Chuột không dây', [
-        { name: 'Chuột', unit: 'cái', unitPrice: 200000, stockQuantity: '2' },
-      ]);
+      const mouse = await gadget(sellerB, 'Chuột không dây', {
+        unitPrice: 200000,
+        stockQuantity: '2',
+      });
 
       const preview = await buyer
         .post('/checkout/preview')
         .send({
           lines: [
-            { itemId: speaker.items[0].id, quantity: '1' },
-            { itemId: cable.items[0].id, quantity: '2' },
-            { itemId: oranges.items[0].id, quantity: '1.5' },
-            { itemId: mouse.items[0].id, quantity: '1' },
+            { listingId: speaker.id, quantity: '1' },
+            { listingId: cable.id, quantity: '2' },
+            { listingId: oranges.id, quantity: '1.5' },
+            { listingId: mouse.id, quantity: '1' },
           ],
         })
         .expect(201);
@@ -226,17 +246,19 @@ describe('Cart and checkout', () => {
     });
 
     it('creates every order at once, takes stock and empties the cart', async () => {
-      const speaker = await gadget(sellerA, 'Loa bluetooth', [
-        { name: 'Loa', unit: 'cái', unitPrice: 500000, stockQuantity: '3' },
-      ]);
-      const mouse = await gadget(sellerB, 'Chuột không dây', [
-        { name: 'Chuột', unit: 'cái', unitPrice: 200000, stockQuantity: '2' },
-      ]);
-      await add(speaker.items[0].id, '2').expect(200);
-      await add(mouse.items[0].id, '1').expect(200);
+      const speaker = await gadget(sellerA, 'Loa bluetooth', {
+        unitPrice: 500000,
+        stockQuantity: '3',
+      });
+      const mouse = await gadget(sellerB, 'Chuột không dây', {
+        unitPrice: 200000,
+        stockQuantity: '2',
+      });
+      await add(speaker.id, '2').expect(200);
+      await add(mouse.id, '1').expect(200);
       const lines = [
-        { itemId: speaker.items[0].id, quantity: '2' },
-        { itemId: mouse.items[0].id, quantity: '1' },
+        { listingId: speaker.id, quantity: '2' },
+        { listingId: mouse.id, quantity: '1' },
       ];
       const preview = (
         await buyer.post('/checkout/preview').send({ lines }).expect(201)
@@ -294,15 +316,17 @@ describe('Cart and checkout', () => {
     });
 
     it('creates nothing when one line is short', async () => {
-      const speaker = await gadget(sellerA, 'Loa bluetooth', [
-        { name: 'Loa', unit: 'cái', unitPrice: 500000, stockQuantity: '3' },
-      ]);
-      const mouse = await gadget(sellerB, 'Chuột không dây', [
-        { name: 'Chuột', unit: 'cái', unitPrice: 200000, stockQuantity: '1' },
-      ]);
+      const speaker = await gadget(sellerA, 'Loa bluetooth', {
+        unitPrice: 500000,
+        stockQuantity: '3',
+      });
+      const mouse = await gadget(sellerB, 'Chuột không dây', {
+        unitPrice: 200000,
+        stockQuantity: '1',
+      });
       const lines = [
-        { itemId: speaker.items[0].id, quantity: '2' },
-        { itemId: mouse.items[0].id, quantity: '2' },
+        { listingId: speaker.id, quantity: '2' },
+        { listingId: mouse.id, quantity: '2' },
       ];
       const preview = (
         await buyer.post('/checkout/preview').send({ lines }).expect(201)
@@ -324,21 +348,22 @@ describe('Cart and checkout', () => {
 
       expect(response.body.code).toBe('OUT_OF_STOCK');
       expect(response.body.details.items).toEqual([
-        { itemId: mouse.items[0].id, name: 'Chuột', available: 1 },
+        { listingId: mouse.id, title: 'Chuột không dây', available: 1 },
       ]);
       expect(await countOrders()).toBe(0);
       expect(await stockOf(speaker, sellerA)).toBe(3);
     });
 
     it('asks to review again when the orders no longer match the preview', async () => {
-      const speaker = await gadget(sellerA, 'Loa bluetooth', [
-        { name: 'Loa', unit: 'cái', unitPrice: 500000, stockQuantity: '3' },
-      ]);
+      const speaker = await gadget(sellerA, 'Loa bluetooth', {
+        unitPrice: 500000,
+        stockQuantity: '3',
+      });
       const response = await buyer
         .post('/checkout')
         .set('Idempotency-Key', randomUUID())
         .send({
-          lines: [{ itemId: speaker.items[0].id, quantity: '1' }],
+          lines: [{ listingId: speaker.id, quantity: '1' }],
           fromCart: false,
           orders: [
             {
@@ -364,15 +389,17 @@ describe('Cart and checkout', () => {
     });
 
     it('shows each listing only its part of a mixed order in the summary', async () => {
-      const speaker = await gadget(sellerA, 'Loa bluetooth', [
-        { name: 'Loa', unit: 'cái', unitPrice: 500000, stockQuantity: '3' },
-      ]);
-      const cable = await gadget(sellerA, 'Dây cáp', [
-        { name: 'Dây', unit: 'cái', unitPrice: 30000, stockQuantity: '9' },
-      ]);
+      const speaker = await gadget(sellerA, 'Loa bluetooth', {
+        unitPrice: 500000,
+        stockQuantity: '3',
+      });
+      const cable = await gadget(sellerA, 'Dây cáp', {
+        unitPrice: 30000,
+        stockQuantity: '9',
+      });
       const lines = [
-        { itemId: speaker.items[0].id, quantity: '1' },
-        { itemId: cable.items[0].id, quantity: '2' },
+        { listingId: speaker.id, quantity: '1' },
+        { listingId: cable.id, quantity: '2' },
       ];
       const [planned] = (
         await buyer.post('/checkout/preview').send({ lines }).expect(201)

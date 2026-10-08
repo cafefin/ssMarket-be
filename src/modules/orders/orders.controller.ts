@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -11,29 +10,21 @@ import {
   Patch,
   Post,
   Query,
-  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiCookieAuth,
-  ApiCreatedResponse,
-  ApiHeader,
   ApiOkResponse,
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { OrderDetailDto, OrderPageDto } from './dto/order-response.dto.js';
-import {
-  CancelOrderDto,
-  EditOrderDto,
-  PlaceOrderDto,
-} from './dto/place-order.dto.js';
+import { CancelOrderDto, EditOrderDto } from './dto/order-input.dto.js';
 import { FulfillmentStatus, PaymentStatus } from './orders.constants.js';
 import { OrdersService } from './orders.service.js';
 
@@ -45,34 +36,6 @@ const optionalUuid = new ParseUUIDPipe({ optional: true });
 @ApiCookieAuth()
 export class OrdersController {
   constructor(private readonly orders: OrdersService) {}
-
-  @Post()
-  @UseGuards(UserThrottlerGuard)
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @ApiHeader({
-    name: 'Idempotency-Key',
-    required: true,
-    description: 'A UUID generated once per order form',
-  })
-  @ApiCreatedResponse({ type: OrderDetailDto })
-  @ApiOkResponse({
-    type: OrderDetailDto,
-    description: 'The order this key already created',
-  })
-  async place(
-    @CurrentUser() user: AuthUser,
-    @Body() body: PlaceOrderDto,
-    @Headers('idempotency-key') idempotencyKey: string | undefined,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<OrderDetailDto> {
-    const { order, replayed } = await this.orders.place(
-      user.id,
-      body,
-      idempotencyKey,
-    );
-    res.status(replayed ? HttpStatus.OK : HttpStatus.CREATED);
-    return order;
-  }
 
   @Get()
   @ApiQuery({ name: 'cursor', required: false })

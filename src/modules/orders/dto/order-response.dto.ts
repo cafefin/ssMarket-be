@@ -43,14 +43,8 @@ export class OrderLineDto {
   @ApiProperty({ format: 'uuid' })
   listingId!: string;
 
-  @ApiProperty({ description: 'Title of the listing the option belongs to' })
-  listingTitle!: string;
-
-  @ApiProperty({ format: 'uuid' })
-  itemId!: string;
-
-  @ApiProperty()
-  itemName!: string;
+  @ApiProperty({ description: 'The product title when it was ordered' })
+  title!: string;
 
   @ApiProperty()
   unit!: string;
@@ -81,9 +75,7 @@ export class OrderLineDto {
   static from(line: OrderLine): OrderLineDto {
     const dto = new OrderLineDto();
     dto.listingId = line.listingId;
-    dto.listingTitle = line.listing?.title ?? '';
-    dto.itemId = line.listingItemId;
-    dto.itemName = line.itemName;
+    dto.title = line.title;
     dto.unit = line.unit;
     dto.unitPrice = line.unitPrice;
     dto.quantity = Number(line.quantity);

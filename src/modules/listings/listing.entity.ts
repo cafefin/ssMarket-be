@@ -13,7 +13,7 @@ import {
 import { Category } from '../categories/category.entity.js';
 import { User } from '../users/user.entity.js';
 import { ListingImage } from './listing-image.entity.js';
-import { ListingItem } from './listing-item.entity.js';
+import { ListingCombo } from './listing-combo.entity.js';
 import {
   ListingCondition,
   ListingMode,
@@ -46,6 +46,26 @@ export class Listing {
 
   @Column({ type: 'text', default: '' })
   description!: string;
+
+  @Column({ type: 'varchar', length: 16 })
+  unit!: string;
+
+  /** Integer VND. */
+  @Column({ name: 'unit_price', type: 'integer' })
+  unitPrice!: number;
+
+  /**
+   * What is left to sell, for in-stock products; null for pre-orders, which
+   * are unlimited. PostgreSQL numeric arrives as a string.
+   */
+  @Column({
+    name: 'stock_quantity',
+    type: 'numeric',
+    precision: 10,
+    scale: 3,
+    nullable: true,
+  })
+  stockQuantity!: string | null;
 
   @Column({ type: 'enum', enum: ListingMode, enumName: 'listings_mode_enum' })
   mode!: ListingMode;
@@ -110,8 +130,8 @@ export class Listing {
   })
   orderCount!: number;
 
-  @OneToMany(() => ListingItem, (item) => item.listing)
-  items!: Relation<ListingItem[]>;
+  @OneToMany(() => ListingCombo, (combo) => combo.listing)
+  combos!: Relation<ListingCombo[]>;
 
   @OneToMany(() => ListingImage, (image) => image.listing)
   images!: Relation<ListingImage[]>;

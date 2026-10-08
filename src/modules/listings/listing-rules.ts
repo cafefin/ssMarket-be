@@ -9,19 +9,6 @@ import {
 } from './listings.constants.js';
 import { type Combo, lineTotal, toThousandths } from './pricing.js';
 
-export interface ListingItemInput {
-  /** Set when editing to keep an existing item; absent for a new one. */
-  id?: string;
-  name: string;
-  unit: string;
-  /** Integer VND. */
-  unitPrice: number;
-  /** Decimal string with up to 3 fraction digits; null means unlimited. */
-  stockQuantity: string | null;
-  /** "N units for a set price"; at most three. */
-  combos: Combo[];
-}
-
 export interface ListingInput {
   mode: ListingMode;
   title: string;
@@ -34,7 +21,13 @@ export interface ListingInput {
   deliveryDate: string | null;
   /** Second-hand condition; only for in-stock goods outside food categories. */
   condition: ListingCondition | null;
-  items: ListingItemInput[];
+  unit: string;
+  /** Integer VND. */
+  unitPrice: number;
+  /** Decimal string with up to 3 fraction digits; null for a pre-order. */
+  stockQuantity: string | null;
+  /** "N units for a set price"; at most three. */
+  combos: Combo[];
 }
 
 /** What validation needs to know about the chosen category. */
@@ -63,77 +56,62 @@ function isRealDate(value: string): boolean {
   );
 }
 
-function itemProblems(
-  item: ListingItemInput,
-  index: number,
-  mode: ListingMode,
-): string[] {
+function productProblems(input: ListingInput): string[] {
   const problems: string[] = [];
-  const label = `item ${index + 1}`;
-  const name = item.name.trim();
 
-  if (name.length === 0 || name.length > LISTING_LIMITS.itemNameMax) {
-    problems.push(
-      `${label}: name must be 1-${LISTING_LIMITS.itemNameMax} characters`,
-    );
-  }
-  if (!(LISTING_UNITS as readonly string[]).includes(item.unit)) {
-    problems.push(`${label}: unit is not supported`);
+  if (!(LISTING_UNITS as readonly string[]).includes(input.unit)) {
+    problems.push('unit is not supported');
   }
   if (
-    !Number.isInteger(item.unitPrice) ||
-    item.unitPrice < LISTING_LIMITS.unitPriceMin ||
-    item.unitPrice > LISTING_LIMITS.unitPriceMax
+    !Number.isInteger(input.unitPrice) ||
+    input.unitPrice < LISTING_LIMITS.unitPriceMin ||
+    input.unitPrice > LISTING_LIMITS.unitPriceMax
   ) {
     problems.push(
-      `${label}: unit price must be a whole number from ${LISTING_LIMITS.unitPriceMin} to ${LISTING_LIMITS.unitPriceMax}`,
+      `unit price must be a whole number from ${LISTING_LIMITS.unitPriceMin} to ${LISTING_LIMITS.unitPriceMax}`,
     );
   }
 
-  problems.push(...comboProblems(item, label));
+  problems.push(...comboProblems(input));
 
-  if (mode === ListingMode.Preorder) {
-    if (item.stockQuantity !== null) {
-      problems.push(`${label}: pre-order items do not have stock`);
+  if (input.mode === ListingMode.Preorder) {
+    if (input.stockQuantity !== null) {
+      problems.push('pre-orders do not have stock');
     }
     return problems;
   }
 
-  if (item.stockQuantity === null) {
-    problems.push(`${label}: stock is required for in-stock listings`);
+  if (input.stockQuantity === null) {
+    problems.push('stock is required for in-stock products');
   } else if (
-    !DECIMAL.test(item.stockQuantity) ||
-    Number(item.stockQuantity) <= 0
+    !DECIMAL.test(input.stockQuantity) ||
+    Number(input.stockQuantity) <= 0
   ) {
-    problems.push(
-      `${label}: stock must be greater than 0 with at most 3 decimals`,
-    );
+    problems.push('stock must be greater than 0 with at most 3 decimals');
   } else if (
-    item.unit !== FRACTIONAL_UNIT &&
-    !Number.isInteger(Number(item.stockQuantity))
+    input.unit !== FRACTIONAL_UNIT &&
+    !Number.isInteger(Number(input.stockQuantity))
   ) {
-    problems.push(
-      `${label}: only ${FRACTIONAL_UNIT} may have fractional stock`,
-    );
+    problems.push(`only ${FRACTIONAL_UNIT} may have fractional stock`);
   }
 
   return problems;
 }
 
-function comboProblems(item: ListingItemInput, label: string): string[] {
+function comboProblems(input: ListingInput): string[] {
   const problems: string[] = [];
-  if (item.combos.length > LISTING_LIMITS.combosMax) {
-    problems.push(`${label}: at most ${LISTING_LIMITS.combosMax} combos`);
+  if (input.combos.length > LISTING_LIMITS.combosMax) {
+    problems.push(`at most ${LISTING_LIMITS.combosMax} combos`);
   }
   // Pieces are sold whole; kg in steps of 0.1.
-  const step = item.unit === FRACTIONAL_UNIT ? 100 : 1000;
+  const step = input.unit === FRACTIONAL_UNIT ? 100 : 1000;
   const sizes = new Set<number>();
-  item.combos.forEach((combo, index) => {
-    const name = `${label}, combo ${index + 1}`;
+  input.combos.forEach((combo, index) => {
+    const name = `combo ${index + 1}`;
     const size = toThousandths(combo.quantity);
     if (size === null || size <= step || size % step !== 0) {
       problems.push(
-        `${name}: quantity must be more than one ${item.unit === FRACTIONAL_UNIT ? '0.1 kg step' : 'unit'} and a multiple of it`,
+        `${name}: quantity must be more than one ${input.unit === FRACTIONAL_UNIT ? '0.1 kg step' : 'unit'} and a multiple of it`,
       );
       return;
     }
@@ -150,8 +128,8 @@ function comboProblems(item: ListingItemInput, label: string): string[] {
         `${name}: price must be a whole number from ${LISTING_LIMITS.unitPriceMin} to ${LISTING_LIMITS.unitPriceMax}`,
       );
     } else if (
-      Number.isInteger(item.unitPrice) &&
-      combo.price >= lineTotal(item.unitPrice, combo.quantity)
+      Number.isInteger(input.unitPrice) &&
+      combo.price >= lineTotal(input.unitPrice, combo.quantity)
     ) {
       problems.push(
         `${name}: must cost less than buying the same quantity singly`,
@@ -189,15 +167,6 @@ export function validateListingInput(
   if (!input.acceptsPrepaidQr && !input.acceptsPayOnDelivery) {
     problems.push('at least one payment method is required');
   }
-  if (
-    input.items.length < LISTING_LIMITS.itemsMin ||
-    input.items.length > LISTING_LIMITS.itemsMax
-  ) {
-    problems.push(
-      `a listing needs ${LISTING_LIMITS.itemsMin}-${LISTING_LIMITS.itemsMax} items`,
-    );
-  }
-
   if (input.mode === ListingMode.InStock) {
     if (input.orderDeadline !== null || input.deliveryDate !== null) {
       problems.push(
@@ -230,9 +199,7 @@ export function validateListingInput(
     );
   }
 
-  input.items.forEach((item, index) => {
-    problems.push(...itemProblems(item, index, input.mode));
-  });
+  problems.push(...productProblems(input));
 
   return problems;
 }

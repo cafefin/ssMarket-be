@@ -34,22 +34,10 @@ function input(overrides: Partial<ListingInput> = {}): ListingInput {
     orderDeadline: null,
     deliveryDate: null,
     condition: ListingCondition.Good,
-    items: [
-      {
-        name: ' Loa JBL ',
-        unit: 'cái',
-        unitPrice: 500_000,
-        stockQuantity: '1',
-        combos: [],
-      },
-      {
-        name: 'Dây sạc',
-        unit: 'cái',
-        unitPrice: 20_000,
-        stockQuantity: '3',
-        combos: [],
-      },
-    ],
+    unit: 'cái',
+    unitPrice: 500_000,
+    stockQuantity: '1',
+    combos: [{ quantity: '2', price: 900_000 }],
     ...overrides,
   };
 }
@@ -64,7 +52,6 @@ function stored(overrides: Partial<Listing> = {}): Listing {
     acceptsPayOnDelivery: true,
     orderDeadline: null,
     deliveryDate: null,
-    items: [{ id: 'item-1' }],
     ...overrides,
   });
 }
@@ -115,7 +102,7 @@ describe('ListingsService', () => {
   });
 
   describe('create', () => {
-    it('stores a draft with trimmed text, search text and ordered items', async () => {
+    it('stores a draft with trimmed text, search text, price and combos', async () => {
       await service.create(SELLER, input());
 
       expect(repository.insert).toHaveBeenCalledWith(
@@ -123,36 +110,22 @@ describe('ListingsService', () => {
           sellerId: SELLER,
           status: ListingStatus.Draft,
           title: 'Loa bluetooth cũ',
-          searchText: 'loa bluetooth cu con moi loa jbl day sac',
+          searchText: 'loa bluetooth cu con moi',
+          unit: 'cái',
+          unitPrice: 500_000,
+          stockQuantity: '1',
           publishedAt: null,
         }),
-        [
-          {
-            name: 'Loa JBL',
-            unit: 'cái',
-            unitPrice: 500_000,
-            stockQuantity: '1',
-            sortOrder: 0,
-            combos: [],
-          },
-          {
-            name: 'Dây sạc',
-            unit: 'cái',
-            unitPrice: 20_000,
-            stockQuantity: '3',
-            sortOrder: 1,
-            combos: [],
-          },
-        ],
+        [{ quantity: '2', price: 900_000 }],
       );
       expect(cache.bumpVersion).toHaveBeenCalledWith('listings');
     });
 
     it('rejects invalid input with every problem in the message', async () => {
       await expect(
-        service.create(SELLER, input({ title: 'abc', items: [] })),
+        service.create(SELLER, input({ title: 'abc', unitPrice: 1 })),
       ).rejects.toThrow(
-        'title must be 5-120 characters; a listing needs 1-10 items',
+        'title must be 5-120 characters; unit price must be a whole number from 1000 to 1000000000',
       );
       expect(repository.insert).not.toHaveBeenCalled();
     });
@@ -193,7 +166,7 @@ describe('ListingsService', () => {
   });
 
   describe('update', () => {
-    it('replaces the fields and items and bumps the cache', async () => {
+    it('replaces the fields and combos and bumps the cache', async () => {
       await service.update(
         SELLER,
         'listing-1',
@@ -203,7 +176,7 @@ describe('ListingsService', () => {
       expect(repository.update).toHaveBeenCalledWith(
         'listing-1',
         expect.objectContaining({ title: 'Loa mới hơn' }),
-        expect.arrayContaining([expect.objectContaining({ sortOrder: 1 })]),
+        [{ quantity: '2', price: 900_000 }],
       );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
     });
@@ -254,37 +227,6 @@ describe('ListingsService', () => {
       await expect(
         codeOf(service.update(SELLER, 'listing-1', input())),
       ).resolves.toBe('INVALID_LISTING_STATE');
-    });
-
-    it('keeps the ids of existing items and rejects ids of other listings', async () => {
-      const withId = input();
-      withId.items[0].id = 'item-1';
-
-      await service.update(SELLER, 'listing-1', withId);
-
-      expect(repository.update).toHaveBeenCalledWith(
-        'listing-1',
-        expect.anything(),
-        [
-          expect.objectContaining({ id: 'item-1', name: 'Loa JBL' }),
-          expect.not.objectContaining({ id: expect.anything() }),
-        ],
-      );
-
-      withId.items[1].id = 'item-of-another-listing';
-      await expect(service.update(SELLER, 'listing-1', withId)).rejects.toThrow(
-        'An item id does not belong to this listing',
-      );
-    });
-
-    it('ignores item ids when creating a listing', async () => {
-      const withId = input();
-      withId.items[0].id = 'chosen-by-the-client';
-
-      await service.create(SELLER, withId);
-
-      const [, items] = repository.insert.mock.calls[0] as [unknown, object[]];
-      expect(items[0]).not.toHaveProperty('id');
     });
 
     it('refuses to change the mode', async () => {
@@ -462,10 +404,12 @@ describe('ListingsService', () => {
       category_name_en: 'Second-hand',
       seller_id: SELLER,
       seller_name: 'Seller',
+      seller_email: 'seller.one@example.com',
       seller_avatar_url: null,
       image_key: null,
-      min_unit_price: 100000,
-      min_price_unit: 'cái',
+      unit_price: 100000,
+      unit: 'cái',
+      has_combos: false,
       order_count: 0,
       stock_quantity: null,
     });
@@ -496,6 +440,15 @@ describe('ListingsService', () => {
       const page = await searching.search({});
 
       expect(page.items[0].stockQuantity).toBe(expected);
+    });
+
+    it('names the seller by the part of their email before @', async () => {
+      search.searchOpen.mockResolvedValue([row('listing-1', null)]);
+
+      const page = await searching.search({});
+
+      expect(page.items[0].seller.handle).toBe('seller.one');
+      expect(page.items[0].unitPrice).toBe(100000);
     });
 
     it('passes the default sort and no seller to the repository', async () => {

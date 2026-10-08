@@ -31,7 +31,7 @@ src/
     ├── users/       accounts, roles, language and seller profile
     ├── banks/       static directory of banks that accept VietQR
     ├── categories/  categories, managed by admins
-    ├── listings/    listings, items, images, search, stock
+    ├── listings/    listings (one product each), combos, images, search, stock
     ├── orders/      orders, state rules, idempotency
     ├── cart/        server-side cart, checkout preview and checkout
     ├── payments/    VietQR payload builder
@@ -93,9 +93,10 @@ Pass structured data the frontend needs
 
 ## Listings
 
-- A listing has a mode, `in_stock` or `preorder`, that never changes. In-stock
-  items have stock; pre-order listings have an order deadline and a delivery
-  date and unlimited items.
+- A listing is **one product**: one unit, one unit price, its own stock and
+  combos. Its mode, `in_stock` or `preorder`, never changes. An in-stock
+  product has `stock_quantity`; a pre-order has an order deadline and a
+  delivery date and no stock limit (NULL). There are no options or variants.
 - A listing is **open** when `status = 'open'` and its deadline, if any, is in
   the future. That condition is evaluated in queries and in `isListingOpen`;
   no background job flips a status.
@@ -104,28 +105,27 @@ Pass structured data the frontend needs
 - Money is integer VND. Quantities are `numeric(10,3)` and arrive from
   PostgreSQL as strings.
 - Other people get 404, not 403, for a listing they may not see.
-- A summary's `stockQuantity` is set only for an in-stock listing with exactly
-  one active item; otherwise it is `null`.
+- A summary carries `unitPrice`, `unit`, `stockQuantity` (null for a
+  pre-order), `hasCombos`, and the seller's `handle` (email before @).
 - `GET /listings?sort=deadline` lists pre-orders only, closing soonest first,
   with its own cursor kind. It answers 400 together with `q` or
   `mode=in_stock`.
 - `GET /listings?seller=<uuid>` limits the list to one seller.
-- A listing is one product with 1–10 options (`listing_items`). Summaries
-  carry `itemCount`, `singleItemId` (set when there is exactly one option, so
-  the list can add it to a cart) and `hasCombos`.
 - `condition` (`new` 100% … `worn` 70%, `CONDITION_PERCENT`) is required for
   in-stock goods outside perishable categories (`categories.is_perishable`)
   and refused elsewhere; `condition_percent` is stored for filtering.
-- `GET /listings?minPrice&maxPrice` filters on the cheapest option's unit
-  price; `minCondition` keeps second-hand goods at least that good.
+- `GET /listings?mode=in_stock` leaves out sold-out products
+  (`stock_quantity = 0`); without `mode` they are listed.
+- `GET /listings?minPrice&maxPrice` filters on the unit price;
+  `minCondition` keeps second-hand goods at least that good.
 
 ## Combos
 
-- An option may have up to three combos: "N units for a set price"
-  (`listing_item_combos`), each cheaper than buying N singly.
+- A product may have up to three combos: "N units for a set price"
+  (`listing_combos`), each cheaper than buying N singly.
 - `lineTotalWithCombos` (`listings/pricing.ts`, re-exported by
   `orders/order-math.ts`) charges the cheapest mix of combos and single
-  units, by dynamic programming. Combos never add up across options or
+  units, by dynamic programming. Combos never add up across products or
   orders; that is a coupon, for later.
 - An order line snapshots `combos` and `list_total` (retail) next to
   `line_total`, like the unit price.
@@ -145,13 +145,14 @@ Pass structured data the frontend needs
 
 ## Orders
 
-- An order's lines record their listing (`order_lines.listing_id`).
-  `orders.listing_id` is set only for pre-orders: an in-stock order from the
-  cart may hold several listings of one seller. Order counts, seller filters,
-  the summary and bulk actions go through the lines, and a summary shows only
-  its listing's part of a mixed order.
-- `OrdersService.createMany` places several orders in one transaction, all
-  or none; `POST /orders` and checkout both use it.
+- An order line is one product (`order_lines.listing_id`) with its title,
+  unit, price and combos copied. `orders.listing_id` is set only for
+  pre-orders: an in-stock order may hold several products of one seller.
+  Order counts, seller filters, the summary and bulk actions go through the
+  lines, and a summary shows only its listing's part of a mixed order.
+- Orders are created only by `POST /checkout` ("buy now" is a checkout of
+  one product). `OrdersService.createMany` places every order of a checkout
+  in one transaction, all or none.
 - An order has two independent state axes. Payment: `unpaid` → `reported` →
   `paid`. Fulfilment: `pending` → `delivered` or `cancelled`. Delivering does
   not mark an order paid, because pay-on-delivery is often collected later.
@@ -159,7 +160,7 @@ Pass structured data the frontend needs
 - The server never trusts amounts from the client. Prices come from the
   listing, totals from `lineTotal`, which works in integers only (quantity in
   thousandths) and rounds half up.
-- An order line snapshots the item's name, unit and price, and a QR order
+- An order line snapshots the product's title, unit and price, and a QR order
   snapshots the seller's bank details. Never read those from the listing or
   the profile when showing an existing order.
 - **Stock changes only through `ListingsService.reserveStock` /
@@ -170,18 +171,18 @@ Pass structured data the frontend needs
 - State changes load the order with `findForUpdate` (row lock) inside
   `TransactionRunner.run`. Services receive the transaction as the opaque
   type `Tx` and pass it to repositories.
-- `POST /orders` requires an `Idempotency-Key` header (`IdempotencyService`),
-  so a double click creates one order.
+- `POST /checkout` requires an `Idempotency-Key` header
+  (`IdempotencyService`), so a double click creates one set of orders.
 - Buyer and seller see an order; anyone else gets 404.
 - After anything that changes stock or order counts, call
   `listings.invalidateCache()`.
-- Editing a listing matches items by id. An item that people have ordered is
-  never deleted, only set `is_active = false`.
+- Editing a listing never changes existing orders: they hold their own copy
+  of the price.
 
 ## Seller tools
 
 - `GET /listings/:id/summary` is the table that replaces the seller's
-  spreadsheet: one row per order, one column per item. Totals come from SQL
+  spreadsheet: one row per order with its quantity. Totals come from SQL
   aggregates in `OrdersRepository.totalsForListing`, never from adding up rows
   in code, and never include cancelled orders.
 - `summary.csv` is written in the caller's `users.locale` (`vi` or `en`);
@@ -191,20 +192,20 @@ Pass structured data the frontend needs
   apostrophe. Keep that when adding columns.
 - `POST /listings/:id/orders/bulk` runs each order through the normal
   single-order method and reports per order; one failure never stops the rest.
-- `PATCH /orders/:id` lets a buyer edit a pre-order while it is unpaid,
-  pending and its listing is open. Lines the order already had keep their
-  snapshot price; added items use the current price.
+- `PATCH /orders/:id` lets a buyer change the quantity of a pre-order while
+  it is unpaid, pending and its listing is open. It keeps its snapshot price.
 - `POST /listings/:id/reopen` copies a finished pre-order round into a new
-  draft (items, and image files as separate copies) with `reopened_from_id`
-  set. It never changes the source listing or its orders.
+  draft (price, combos, and image files as separate copies) with
+  `reopened_from_id` set. It never changes the source listing or its orders.
 - `orderCount` on a listing is a database-computed virtual column.
 
 ## Cart and checkout
 
-- `cart_lines` holds option and quantity per person (max 50, `CART_FULL`);
-  no price. `GET /cart` groups by seller with current prices, combos applied
-  and a `problem` per line (`LISTING_NOT_OPEN`, `ITEM_REMOVED`,
-  `OUT_OF_STOCK`). The cart never reserves stock.
+- `cart_lines` holds product and quantity per person (max 50, `CART_FULL`);
+  no price. `PUT /cart/lines/:listingId` refuses more than the stock left
+  (`OUT_OF_STOCK`, with `available`). `GET /cart` groups by seller with
+  current prices, combos applied and a `problem` per line
+  (`LISTING_NOT_OPEN`, `OUT_OF_STOCK`). The cart never reserves stock.
 - `splitIntoOrders` (`cart/checkout-split.ts`) decides the orders: each
   pre-order listing alone; a seller's in-stock goods together when their
   listings share a payment method, otherwise one order per listing.
@@ -237,7 +238,7 @@ statement for the order code.
 - Read through `CacheService.getOrSet`. It never fails a request: when Redis
   is down it calls the loader.
 - Keys embed a namespace version: `listings:v{n}:...`. **Every write to a
-  listing, its items or its images must call
+  listing, its combos or its images must call
   `cache.bumpVersion(LISTINGS_CACHE_NAMESPACE)`.**
 - Cache public data only. Drafts, closed listings and per-user lists are read
   from the database.

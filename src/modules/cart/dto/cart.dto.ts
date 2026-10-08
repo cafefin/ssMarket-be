@@ -23,28 +23,18 @@ import { PaymentMethod } from '../../orders/orders.constants.js';
 /** Why a line in the cart cannot be bought right now. */
 export enum CartProblem {
   ListingNotOpen = 'LISTING_NOT_OPEN',
-  ItemRemoved = 'ITEM_REMOVED',
   OutOfStock = 'OUT_OF_STOCK',
 }
 
 export class CartLineDto {
   @ApiProperty({ format: 'uuid' })
-  itemId!: string;
-
-  @ApiProperty({ format: 'uuid' })
   listingId!: string;
 
   @ApiProperty()
-  listingTitle!: string;
+  title!: string;
 
   @ApiProperty({ enum: ListingMode, enumName: 'ListingMode' })
   mode!: ListingMode;
-
-  @ApiProperty({ description: 'Active options of the listing' })
-  itemCount!: number;
-
-  @ApiProperty()
-  itemName!: string;
 
   @ApiProperty()
   unit!: string;
@@ -58,7 +48,11 @@ export class CartLineDto {
   @ApiProperty()
   quantity!: number;
 
-  @ApiProperty({ type: Number, nullable: true, description: 'null: unlimited' })
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'What is left of an in-stock product; null for a pre-order',
+  })
   stockQuantity!: number | null;
 
   @ApiProperty({ type: String, nullable: true })
@@ -108,7 +102,7 @@ export class SetCartLineDto {
 export class CheckoutLineDto {
   @ApiProperty({ format: 'uuid' })
   @IsUUID()
-  itemId!: string;
+  listingId!: string;
 
   @ApiProperty({ description: 'Decimal string', example: '1.5' })
   @IsString()
@@ -128,16 +122,10 @@ export class CheckoutPreviewRequestDto {
 
 export class CheckoutPreviewLineDto {
   @ApiProperty({ format: 'uuid' })
-  itemId!: string;
-
-  @ApiProperty({ format: 'uuid' })
   listingId!: string;
 
   @ApiProperty()
-  listingTitle!: string;
-
-  @ApiProperty()
-  itemName!: string;
+  title!: string;
 
   @ApiProperty()
   unit!: string;
@@ -222,7 +210,7 @@ export class CheckoutOrderChoiceDto {
   note?: string | null;
 }
 
-// As with PlaceOrderDto there is no price here: the server prices every line.
+// There is no price here: the server prices every line.
 export class CheckoutRequestDto extends CheckoutPreviewRequestDto {
   @ApiProperty({ type: [CheckoutOrderChoiceDto] })
   @IsArray()

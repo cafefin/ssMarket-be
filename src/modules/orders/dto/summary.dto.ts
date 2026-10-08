@@ -12,12 +12,6 @@ import {
   PaymentStatus,
 } from '../orders.constants.js';
 
-const QUANTITIES = {
-  type: 'object',
-  additionalProperties: { type: 'number' },
-  description: 'Quantity per item id; items not ordered are absent',
-} as const;
-
 export class SummaryListingDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -25,25 +19,14 @@ export class SummaryListingDto {
   @ApiProperty()
   title!: string;
 
+  @ApiProperty({ example: 'cái' })
+  unit!: string;
+
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   orderDeadline!: string | null;
 
   @ApiProperty({ type: String, format: 'date', nullable: true })
   deliveryDate!: string | null;
-}
-
-export class SummaryItemDto {
-  @ApiProperty({ format: 'uuid' })
-  id!: string;
-
-  @ApiProperty()
-  name!: string;
-
-  @ApiProperty()
-  unit!: string;
-
-  @ApiProperty({ description: 'False for an item the seller has removed' })
-  isActive!: boolean;
 }
 
 export class SummaryBuyerDto {
@@ -67,8 +50,8 @@ export class SummaryRowDto {
   @ApiProperty()
   deliveryLocation!: string;
 
-  @ApiProperty(QUANTITIES)
-  quantities!: Record<string, number>;
+  @ApiProperty({ description: 'Units of this product in the order' })
+  quantity!: number;
 
   @ApiProperty({ description: 'Integer VND' })
   totalAmount!: number;
@@ -93,8 +76,8 @@ export class SummaryTotalsDto {
   @ApiProperty()
   orderCount!: number;
 
-  @ApiProperty(QUANTITIES)
-  quantities!: Record<string, number>;
+  @ApiProperty({ description: 'Units ordered' })
+  quantity!: number;
 
   @ApiProperty({ description: 'Integer VND' })
   totalAmount!: number;
@@ -109,9 +92,6 @@ export class SummaryTotalsDto {
 export class SalesSummaryDto {
   @ApiProperty({ type: SummaryListingDto })
   listing!: SummaryListingDto;
-
-  @ApiProperty({ type: [SummaryItemDto] })
-  items!: SummaryItemDto[];
 
   @ApiProperty({ type: [SummaryRowDto] })
   rows!: SummaryRowDto[];

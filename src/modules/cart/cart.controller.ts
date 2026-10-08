@@ -55,25 +55,25 @@ export class CartController {
     return { count: await this.cart.count(user.id) };
   }
 
-  @Put('lines/:itemId')
+  @Put('lines/:listingId')
   @UseGuards(UserThrottlerGuard)
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOkResponse({ type: CartDto })
   setLine(
     @CurrentUser() user: AuthUser,
-    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Param('listingId', ParseUUIDPipe) listingId: string,
     @Body() body: SetCartLineDto,
   ): Promise<CartDto> {
-    return this.cart.setLine(user.id, itemId, body.quantity);
+    return this.cart.setLine(user.id, listingId, body.quantity);
   }
 
-  @Delete('lines/:itemId')
+  @Delete('lines/:listingId')
   @ApiOkResponse({ type: CartDto })
   removeLine(
     @CurrentUser() user: AuthUser,
-    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Param('listingId', ParseUUIDPipe) listingId: string,
   ): Promise<CartDto> {
-    return this.cart.removeLine(user.id, itemId);
+    return this.cart.removeLine(user.id, listingId);
   }
 }
 
