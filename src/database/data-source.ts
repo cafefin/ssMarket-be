@@ -2,8 +2,7 @@ import 'dotenv/config';
 import { DataSource } from 'typeorm';
 import { Category } from '../modules/categories/category.entity.js';
 import { ListingImage } from '../modules/listings/listing-image.entity.js';
-import { ListingItemCombo } from '../modules/listings/listing-item-combo.entity.js';
-import { ListingItem } from '../modules/listings/listing-item.entity.js';
+import { ListingCombo } from '../modules/listings/listing-combo.entity.js';
 import { Listing } from '../modules/listings/listing.entity.js';
 import { CartLine } from '../modules/cart/cart-line.entity.js';
 import { OrderLine } from '../modules/orders/order-line.entity.js';
@@ -20,8 +19,7 @@ export default new DataSource({
     User,
     Category,
     Listing,
-    ListingItem,
-    ListingItemCombo,
+    ListingCombo,
     ListingImage,
     Order,
     OrderLine,

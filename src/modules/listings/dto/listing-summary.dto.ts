@@ -22,13 +22,11 @@ export class ListingSummaryDto {
   @ApiProperty({ type: String, nullable: true })
   thumbnailUrl!: string | null;
 
-  @ApiProperty({
-    description: 'Lowest unit price among the items, integer VND',
-  })
-  minUnitPrice!: number;
+  @ApiProperty({ description: 'Integer VND' })
+  unitPrice!: number;
 
-  @ApiProperty({ description: 'Unit of the cheapest item', example: 'kg' })
-  minPriceUnit!: string;
+  @ApiProperty({ example: 'cái' })
+  unit!: string;
 
   @ApiProperty({ description: 'Orders that have not been cancelled' })
   orderCount!: number;
@@ -36,27 +34,12 @@ export class ListingSummaryDto {
   @ApiProperty({
     type: Number,
     nullable: true,
-    description:
-      'Remaining stock, only for an in-stock listing with exactly one item ' +
-      'that has a stock limit; null otherwise',
+    description: 'Remaining stock of an in-stock product; null for a pre-order',
   })
   stockQuantity!: number | null;
 
-  @ApiProperty({ description: 'True when some option has a combo price' })
+  @ApiProperty({ description: 'True when the product has a combo price' })
   hasCombos!: boolean;
-
-  @ApiProperty({ description: 'Active options (items) of the listing' })
-  itemCount!: number;
-
-  @ApiProperty({
-    type: String,
-    format: 'uuid',
-    nullable: true,
-    description:
-      'The id of the only option when there is exactly one, so the list can ' +
-      'add it to the cart directly; null otherwise',
-  })
-  singleItemId!: string | null;
 
   @ApiProperty({
     enum: ListingCondition,

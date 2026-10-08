@@ -10,8 +10,9 @@ import { Listing } from '../listings/listing.entity.js';
 import { Order } from './order.entity.js';
 
 /**
- * One ordered item. Name, unit and price are copied from the listing when
- * the order is placed, so later edits to the listing never change an order.
+ * One ordered product. Title, unit and price are copied from the listing
+ * when the order is placed, so later edits to the listing never change an
+ * order.
  */
 @Entity('order_lines')
 export class OrderLine {
@@ -32,11 +33,8 @@ export class OrderLine {
   @JoinColumn({ name: 'listing_id' })
   listing!: Relation<Listing>;
 
-  @Column({ name: 'listing_item_id', type: 'uuid' })
-  listingItemId!: string;
-
-  @Column({ name: 'item_name', type: 'varchar', length: 120 })
-  itemName!: string;
+  @Column({ type: 'varchar', length: 120 })
+  title!: string;
 
   @Column({ type: 'varchar', length: 16 })
   unit!: string;

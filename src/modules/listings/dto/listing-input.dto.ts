@@ -9,7 +9,6 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
-  IsUUID,
   Matches,
   MaxLength,
   ValidateNested,
@@ -38,60 +37,12 @@ export class ComboInputDto {
   price!: number;
 }
 
-export class ListingItemInputDto {
-  @ApiPropertyOptional({
-    format: 'uuid',
-    description:
-      'When editing: the id of an existing item to keep. Omit for a new item.',
-  })
-  @IsOptional()
-  @IsUUID()
-  id?: string;
-
-  @ApiProperty({ example: 'Cam sành' })
-  @IsString()
-  @MaxLength(500)
-  name!: string;
-
-  @ApiProperty({ enum: LISTING_UNITS, example: 'kg' })
-  @IsString()
-  @MaxLength(16)
-  unit!: string;
-
-  @ApiProperty({ description: 'Integer VND', example: 35000 })
-  @IsInt()
-  unitPrice!: number;
-
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    description:
-      'Decimal string, up to 3 fraction digits. Required for in-stock listings, null for pre-order.',
-    example: '2.5',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(16)
-  stockQuantity?: string | null;
-
-  @ApiPropertyOptional({
-    type: [ComboInputDto],
-    description: '"N units for a set price"; at most 3',
-  })
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(10)
-  @ValidateNested({ each: true })
-  @Type(() => ComboInputDto)
-  combos?: ComboInputDto[];
-}
-
 export class ListingInputDto {
   @ApiProperty({ enum: ListingMode, enumName: 'ListingMode' })
   @IsEnum(ListingMode)
   mode!: ListingMode;
 
-  @ApiProperty({ example: 'Hoa quả tuần 41' })
+  @ApiProperty({ example: 'Loa JBL Go 3' })
   @IsString()
   @MaxLength(500)
   title!: string;
@@ -147,12 +98,37 @@ export class ListingInputDto {
   @IsEnum(ListingCondition)
   condition?: ListingCondition | null;
 
-  @ApiProperty({ type: [ListingItemInputDto] })
+  @ApiProperty({ enum: LISTING_UNITS, example: 'cái' })
+  @IsString()
+  @MaxLength(16)
+  unit!: string;
+
+  @ApiProperty({ description: 'Integer VND', example: 35000 })
+  @IsInt()
+  unitPrice!: number;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Decimal string, up to 3 fraction digits. Required for in-stock products, null for pre-orders.',
+    example: '2',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  stockQuantity?: string | null;
+
+  @ApiPropertyOptional({
+    type: [ComboInputDto],
+    description: '"N units for a set price"; at most 3',
+  })
+  @IsOptional()
   @IsArray()
-  @ArrayMaxSize(100)
+  @ArrayMaxSize(10)
   @ValidateNested({ each: true })
-  @Type(() => ListingItemInputDto)
-  items!: ListingItemInputDto[];
+  @Type(() => ComboInputDto)
+  combos?: ComboInputDto[];
 
   toInput(): ListingInput {
     return {
@@ -165,16 +141,12 @@ export class ListingInputDto {
       orderDeadline: this.orderDeadline ? new Date(this.orderDeadline) : null,
       deliveryDate: this.deliveryDate ?? null,
       condition: this.condition ?? null,
-      items: this.items.map((item) => ({
-        id: item.id,
-        name: item.name,
-        unit: item.unit,
-        unitPrice: item.unitPrice,
-        stockQuantity: item.stockQuantity ?? null,
-        combos: (item.combos ?? []).map((combo) => ({
-          quantity: combo.quantity,
-          price: combo.price,
-        })),
+      unit: this.unit,
+      unitPrice: this.unitPrice,
+      stockQuantity: this.stockQuantity ?? null,
+      combos: (this.combos ?? []).map((combo) => ({
+        quantity: combo.quantity,
+        price: combo.price,
       })),
     };
   }

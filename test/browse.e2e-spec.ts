@@ -6,21 +6,16 @@ import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
 
-const item = (name: string, stockQuantity?: string) => ({
-  name,
-  unit: 'hộp',
-  unitPrice: 15000,
-  ...(stockQuantity === undefined ? {} : { stockQuantity }),
-});
-
-const inStock = (title: string, items: object[]) => ({
+const inStock = (title: string, stockQuantity = '5') => ({
   mode: 'in_stock',
   title,
   categoryId: 3,
   description: 'Nhà làm',
   acceptsPrepaidQr: false,
   acceptsPayOnDelivery: true,
-  items,
+  unit: 'hộp',
+  unitPrice: 15000,
+  stockQuantity,
 });
 
 const preorder = (title: string, hoursUntilDeadline: number) => ({
@@ -36,7 +31,8 @@ const preorder = (title: string, hoursUntilDeadline: number) => ({
   deliveryDate: new Date(Date.now() + 30 * 86_400_000)
     .toISOString()
     .slice(0, 10),
-  items: [{ name: 'Cam sành', unit: 'kg', unitPrice: 35000 }],
+  unit: 'kg',
+  unitPrice: 35000,
 });
 
 describe('Browse listings', () => {
@@ -78,21 +74,34 @@ describe('Browse listings', () => {
         .stockQuantity;
     };
 
-    it('is the remaining stock of a single limited item', async () => {
-      await createOpen(inStock('Sua chua tuoi', [item('Hu', '24')]));
+    it('is the remaining stock of an in-stock product', async () => {
+      await createOpen(inStock('Sua chua tuoi', '24'));
       expect(await stockOf('Sua chua tuoi')).toBe(24);
-    });
-
-    it('is null when the listing has more than one item', async () => {
-      await createOpen(
-        inStock('Banh ga hoac banh mi', [item('Nho', '5'), item('Lon', '3')]),
-      );
-      expect(await stockOf('Banh ga hoac banh mi')).toBeNull();
     });
 
     it('is null for a pre-order', async () => {
       await createOpen(preorder('Hoa qua tuoi tro', 48));
       expect(await stockOf('Hoa qua tuoi tro')).toBeNull();
+    });
+  });
+
+  describe('GET /listings?mode=in_stock', () => {
+    it('leaves out products that are sold out, which "all" still shows', async () => {
+      await createOpen(inStock('Còn hàng'));
+      const soldOut = await createOpen(inStock('Hết hàng', '1'));
+      await dataSource.query(
+        'UPDATE listings SET stock_quantity = 0 WHERE id = $1',
+        [soldOut],
+      );
+      await redis.flushdb();
+
+      const titles = async (query: string) =>
+        (await buyer.get(`/listings${query}`).expect(200)).body.items
+          .map((l: { title: string }) => l.title)
+          .sort();
+
+      expect(await titles('?mode=in_stock')).toEqual(['Còn hàng']);
+      expect(await titles('')).toEqual(['Còn hàng', 'Hết hàng']);
     });
   });
 
@@ -102,7 +111,7 @@ describe('Browse listings', () => {
 
     it('returns pre-orders closing soonest first and nothing else', async () => {
       await createOpen(preorder('Thứ Sáu', 72));
-      await createOpen(inStock('Có sẵn', [item('Hũ', '5')]));
+      await createOpen(inStock('Có sẵn'));
       await createOpen(preorder('Hôm nay', 2));
       await createOpen(preorder('Ngày mai', 26));
 
@@ -153,8 +162,8 @@ describe('Browse listings', () => {
       await buyer.get('/listings?sort=deadline&mode=in_stock').expect(400);
       await buyer.get('/listings?sort=soonest').expect(400);
 
-      await createOpen(inStock('Bánh A', [item('Hũ', '5')]));
-      await createOpen(inStock('Bánh B', [item('Hũ', '5')]));
+      await createOpen(inStock('Bánh A'));
+      await createOpen(inStock('Bánh B'));
       const recent = await buyer.get('/listings?limit=1').expect(200);
       await buyer
         .get(`/listings?sort=deadline&cursor=${recent.body.nextCursor}`)
@@ -164,14 +173,11 @@ describe('Browse listings', () => {
 
   describe('GET /listings?seller=', () => {
     it("returns only that seller's open listings", async () => {
-      await createOpen(inStock('Của người bán', [item('Hũ', '5')]));
-      await seller
-        .post('/listings')
-        .send(inStock('Bản nháp', [item('Hũ', '5')]))
-        .expect(201);
+      await createOpen(inStock('Của người bán'));
+      await seller.post('/listings').send(inStock('Bản nháp')).expect(201);
       const other = await buyer
         .post('/listings')
-        .send(inStock('Của người khác', [item('Hũ', '5')]))
+        .send(inStock('Của người khác'))
         .expect(201);
       await buyer.post(`/listings/${other.body.id}/publish`).expect(200);
       const sellerId = (await seller.get('/users/me').expect(200)).body.id;
@@ -197,7 +203,9 @@ describe('Browse listings', () => {
       description: '',
       acceptsPrepaidQr: false,
       acceptsPayOnDelivery: true,
-      items: [{ name: title, unit: 'cái', unitPrice, stockQuantity: '1' }],
+      unit: 'cái',
+      unitPrice,
+      stockQuantity: '1',
     });
     const titles = async (query: string): Promise<string[]> => {
       const page = await buyer.get(`/listings?${query}`).expect(200);
@@ -211,7 +219,7 @@ describe('Browse listings', () => {
       await createOpen(preorder('Hoa quả', 48));
     });
 
-    it('keeps listings whose cheapest option is inside the price range', async () => {
+    it('keeps products whose price is inside the range', async () => {
       expect(await titles('minPrice=100000&maxPrice=1000000')).toEqual([
         'Bàn phím',
       ]);

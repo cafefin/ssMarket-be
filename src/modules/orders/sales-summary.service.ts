@@ -55,38 +55,22 @@ export class SalesSummaryService {
       });
     });
 
-    // Removed items keep their column while any shown order still has them.
-    const ordered = new Set(
-      orders.flatMap((order) => order.lines.map((line) => line.listingItemId)),
-    );
-    const items = listing.items
-      .filter((item) => item.isActive || ordered.has(item.id))
-      .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map((item) => ({
-        id: item.id,
-        name: item.name,
-        unit: item.unit,
-        isActive: item.isActive,
-      }));
-
     return {
       listing: {
         id: listing.id,
         title: listing.title,
+        unit: listing.unit,
         orderDeadline: listing.orderDeadline?.toISOString() ?? null,
         deliveryDate: listing.deliveryDate,
       },
-      items,
       rows: orders.map((order) => ({
         orderId: order.id,
         code: order.code,
         buyer: { name: order.buyer.name, email: order.buyer.email },
         deliveryLocation: order.deliveryLocation,
-        quantities: Object.fromEntries(
-          order.lines.map((line) => [
-            line.listingItemId,
-            Number(line.quantity),
-          ]),
+        quantity: order.lines.reduce(
+          (sum, line) => sum + Number(line.quantity),
+          0,
         ),
         totalAmount: order.totalAmount,
         paymentMethod: order.paymentMethod,

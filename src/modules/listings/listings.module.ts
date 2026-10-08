@@ -6,8 +6,7 @@ import { ListingImage } from './listing-image.entity.js';
 import { ListingImagesController } from './listing-images.controller.js';
 import { ListingImagesRepository } from './listing-images.repository.js';
 import { ListingImagesService } from './listing-images.service.js';
-import { ListingItemCombo } from './listing-item-combo.entity.js';
-import { ListingItem } from './listing-item.entity.js';
+import { ListingCombo } from './listing-combo.entity.js';
 import { Listing } from './listing.entity.js';
 import {
   ListingsController,
@@ -18,12 +17,7 @@ import { ListingsService } from './listings.service.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      Listing,
-      ListingItem,
-      ListingItemCombo,
-      ListingImage,
-    ]),
+    TypeOrmModule.forFeature([Listing, ListingCombo, ListingImage]),
     UsersModule,
     CategoriesModule,
   ],

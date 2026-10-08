@@ -2,7 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { CategoryResponseDto } from '../../categories/dto/category-response.dto.js';
 import type { User } from '../../users/user.entity.js';
 import type { ListingImage } from '../listing-image.entity.js';
-import type { ListingItem } from '../listing-item.entity.js';
+import type { ListingCombo } from '../listing-combo.entity.js';
 import { isListingOpen } from '../listing-rules.js';
 import type { Listing } from '../listing.entity.js';
 import {
@@ -20,6 +20,11 @@ export class ListingSellerDto {
   @ApiProperty()
   name!: string;
 
+  @ApiProperty({
+    description: 'The part of the work email before @, e.g. "an.nguyen"',
+  })
+  handle!: string;
+
   @ApiProperty({ type: String, nullable: true })
   avatarUrl!: string | null;
 
@@ -27,9 +32,15 @@ export class ListingSellerDto {
     const dto = new ListingSellerDto();
     dto.id = user.id;
     dto.name = user.name;
+    dto.handle = emailHandle(user.email);
     dto.avatarUrl = user.avatarUrl;
     return dto;
   }
+}
+
+/** "an.nguyen@company.vn" -> "an.nguyen". */
+export function emailHandle(email: string): string {
+  return email.split('@')[0];
 }
 
 export class ComboDto {
@@ -40,53 +51,21 @@ export class ComboDto {
   price!: number;
 }
 
-export class ListingItemDto {
-  @ApiProperty({ format: 'uuid' })
-  id!: string;
-
-  @ApiProperty()
-  name!: string;
-
-  @ApiProperty()
-  unit!: string;
-
-  @ApiProperty({ description: 'Integer VND' })
-  unitPrice!: number;
-
-  @ApiProperty({
-    type: Number,
-    nullable: true,
-    description: 'Remaining stock; null means unlimited',
-  })
-  stockQuantity!: number | null;
-
-  @ApiProperty({
-    type: [ComboDto],
-    description: '"N units for a set price", smallest first',
-  })
-  combos!: ComboDto[];
-
-  static from(item: ListingItem): ListingItemDto {
-    const dto = new ListingItemDto();
-    dto.id = item.id;
-    dto.name = item.name;
-    dto.unit = item.unit;
-    dto.unitPrice = item.unitPrice;
-    dto.stockQuantity =
-      item.stockQuantity === null ? null : Number(item.stockQuantity);
-    dto.combos = (item.combos ?? [])
-      .map((combo) => ({
-        quantity: normalizeDecimal(combo.quantity),
-        price: combo.price,
-      }))
-      .sort((a, b) => Number(a.quantity) - Number(b.quantity));
-    return dto;
-  }
-}
-
 /** "100.000" from PostgreSQL numeric -> "100"; "2.500" -> "2.5". */
 function normalizeDecimal(value: string): string {
   return String(Number(value));
+}
+
+/** A product's combos, smallest first, with quantities as plain decimals. */
+export function combosOf(
+  combos: ReadonlyArray<Pick<ListingCombo, 'quantity' | 'price'>> | undefined,
+): ComboDto[] {
+  return (combos ?? [])
+    .map((combo) => ({
+      quantity: normalizeDecimal(combo.quantity),
+      price: combo.price,
+    }))
+    .sort((a, b) => Number(a.quantity) - Number(b.quantity));
 }
 
 export class ListingImageDto {
@@ -175,8 +154,24 @@ export class ListingDetailDto {
   })
   reopenedFromId!: string | null;
 
-  @ApiProperty({ type: [ListingItemDto] })
-  items!: ListingItemDto[];
+  @ApiProperty({ example: 'cái' })
+  unit!: string;
+
+  @ApiProperty({ description: 'Integer VND' })
+  unitPrice!: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'Remaining stock of an in-stock product; null for a pre-order',
+  })
+  stockQuantity!: number | null;
+
+  @ApiProperty({
+    type: [ComboDto],
+    description: '"N units for a set price", smallest first',
+  })
+  combos!: ComboDto[];
 
   @ApiProperty({ type: [ListingImageDto] })
   images!: ListingImageDto[];
@@ -202,9 +197,11 @@ export class ListingDetailDto {
       ? CONDITION_PERCENT[listing.condition]
       : null;
     dto.reopenedFromId = listing.reopenedFromId ?? null;
-    dto.items = listing.items
-      .filter((item) => item.isActive)
-      .map((item) => ListingItemDto.from(item));
+    dto.unit = listing.unit;
+    dto.unitPrice = listing.unitPrice;
+    dto.stockQuantity =
+      listing.stockQuantity === null ? null : Number(listing.stockQuantity);
+    dto.combos = combosOf(listing.combos);
     dto.images = listing.images.map((image) => ListingImageDto.from(image));
     return dto;
   }

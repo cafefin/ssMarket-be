@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { DomainException } from '../../common/errors/domain.exception.js';
-import { ListingSellerDto } from '../listings/dto/listing-response.dto.js';
+import {
+  combosOf,
+  ListingSellerDto,
+} from '../listings/dto/listing-response.dto.js';
 import { isListingOpen } from '../listings/listing-rules.js';
-import type { ListingItem } from '../listings/listing-item.entity.js';
 import type { Listing } from '../listings/listing.entity.js';
 import { ListingMode } from '../listings/listings.constants.js';
 import { ListingsService } from '../listings/listings.service.js';
@@ -34,9 +36,8 @@ export const CART_MAX_LINES = 50;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** A line being bought, resolved to its option and listing. */
+/** A line being bought, resolved to its listing. */
 interface ResolvedLine {
-  item: ListingItem;
   listing: Listing;
   quantity: string;
 }
@@ -54,24 +55,23 @@ export class CartService {
   /** The cart grouped by seller, with current prices and what is wrong. */
   async get(userId: string): Promise<CartDto> {
     const lines = await this.cart.findForUser(userId);
-    const items = new Map(
-      (
-        await this.listings.findItems(lines.map((line) => line.listingItemId))
-      ).map((item) => [item.id, item]),
+    const listings = new Map(
+      (await this.listings.findByIds(lines.map((line) => line.listingId))).map(
+        (listing) => [listing.id, listing],
+      ),
     );
     const now = new Date();
     const groups = new Map<string, CartGroupDto>();
     for (const line of lines) {
-      const item = items.get(line.listingItemId);
-      if (!item) {
+      const listing = listings.get(line.listingId);
+      if (!listing) {
         continue;
       }
-      const listing = item.listing;
       const group = groups.get(listing.sellerId) ?? {
         seller: ListingSellerDto.from(listing.seller),
         lines: [],
       };
-      group.lines.push(this.toLine(item, line.quantity, now));
+      group.lines.push(this.toLine(listing, line.quantity, now));
       groups.set(listing.sellerId, group);
     }
     return {
@@ -84,49 +84,69 @@ export class CartService {
     return this.cart.countForUser(userId);
   }
 
-  /** Puts an option in the cart with this quantity, or changes it. */
+  /**
+   * Puts a product in the cart with this quantity, or changes it. More than
+   * the stock that is left is refused, so the cart never promises what
+   * cannot be bought; checkout still reserves the stock for real.
+   */
   async setLine(
     userId: string,
-    itemId: string,
+    listingId: string,
     quantity: string,
   ): Promise<CartDto> {
-    const [item] = await this.listings.findItems([itemId]);
-    if (!item || !item.isActive || !isListingOpen(item.listing, new Date())) {
+    const [listing] = await this.listings.findByIds([listingId]);
+    if (!listing || !isListingOpen(listing, new Date())) {
       throw new DomainException(
         409,
         'LISTING_NOT_OPEN',
         'This listing is not open for orders',
       );
     }
-    if (item.listing.sellerId === userId) {
+    if (listing.sellerId === userId) {
       throw new DomainException(
         422,
         'OWN_LISTING',
         'You cannot buy from your own listing',
       );
     }
-    const problem = quantityProblem(quantity, item.unit);
+    const problem = quantityProblem(quantity, listing.unit);
     if (problem) {
       throw new DomainException(422, 'INVALID_QUANTITY', problem, {
         problems: [problem],
       });
     }
+    if (exceedsStock(listing, quantity)) {
+      throw new DomainException(
+        409,
+        'OUT_OF_STOCK',
+        'Not enough stock for this quantity',
+        {
+          items: [
+            {
+              listingId,
+              title: listing.title,
+              available: Number(listing.stockQuantity),
+            },
+          ],
+        },
+      );
+    }
     if (
-      !(await this.cart.findLine(userId, itemId)) &&
+      !(await this.cart.findLine(userId, listingId)) &&
       (await this.cart.countForUser(userId)) >= CART_MAX_LINES
     ) {
       throw new DomainException(
         409,
         'CART_FULL',
-        `A cart holds at most ${CART_MAX_LINES} options`,
+        `A cart holds at most ${CART_MAX_LINES} products`,
       );
     }
-    await this.cart.upsert(userId, itemId, quantity);
+    await this.cart.upsert(userId, listingId, quantity);
     return this.get(userId);
   }
 
-  async removeLine(userId: string, itemId: string): Promise<CartDto> {
-    await this.cart.remove(userId, itemId);
+  async removeLine(userId: string, listingId: string): Promise<CartDto> {
+    await this.cart.remove(userId, listingId);
     return this.get(userId);
   }
 
@@ -136,29 +156,26 @@ export class CartService {
     lines: CheckoutLineDto[],
   ): Promise<CheckoutPreviewDto> {
     const resolved = await this.resolve(userId, lines);
-    const byItem = new Map(resolved.map((line) => [line.item.id, line]));
+    const byListing = new Map(resolved.map((line) => [line.listing.id, line]));
     return {
       orders: this.split(resolved).map((planned) => {
-        const orderLines = planned.itemIds.map(
-          (id) => byItem.get(id) as ResolvedLine,
+        const orderLines = planned.listingIds.map(
+          (id) => byListing.get(id) as ResolvedLine,
         );
         const first = orderLines[0].listing;
-        const priced = orderLines.map(({ item, listing, quantity }) => ({
-          itemId: item.id,
-          listingId: listing.id,
-          listingTitle: listing.title,
-          itemName: item.name,
-          unit: item.unit,
-          unitPrice: item.unitPrice,
-          quantity: Number(quantity),
-          combos: combosOf(item),
-          lineTotal: lineTotalWithCombos(
-            item.unitPrice,
-            combosOf(item),
-            quantity,
-          ),
-          listTotal: lineTotal(item.unitPrice, quantity),
-        }));
+        const priced = orderLines.map(({ listing, quantity }) => {
+          const combos = combosOf(listing.combos);
+          return {
+            listingId: listing.id,
+            title: listing.title,
+            unit: listing.unit,
+            unitPrice: listing.unitPrice,
+            quantity: Number(quantity),
+            combos,
+            lineTotal: lineTotalWithCombos(listing.unitPrice, combos, quantity),
+            listTotal: lineTotal(listing.unitPrice, quantity),
+          };
+        });
         const isPreorder = first.mode === ListingMode.Preorder;
         return {
           key: planned.key,
@@ -236,23 +253,19 @@ export class CartService {
         'The orders to create have changed; review them again',
       );
     }
-    const listingOf = new Map(
-      resolved.map((line) => [line.item.id, line.listing.id]),
-    );
     const quantityOf = new Map(
-      resolved.map((line) => [line.item.id, line.quantity]),
+      resolved.map((line) => [line.listing.id, line.quantity]),
     );
-    const itemIds = resolved.map((line) => line.item.id);
+    const listingIds = resolved.map((line) => line.listing.id);
 
     return this.orders.createMany(
       userId,
       planned.map((order) => {
         const choice = choices.get(order.key) as CheckoutOrderChoiceDto;
         return {
-          lines: order.itemIds.map((itemId) => ({
-            listingId: listingOf.get(itemId) as string,
-            itemId,
-            quantity: quantityOf.get(itemId) as string,
+          lines: order.listingIds.map((listingId) => ({
+            listingId,
+            quantity: quantityOf.get(listingId) as string,
           })),
           paymentMethod: choice.paymentMethod,
           deliveryLocation: choice.deliveryLocation,
@@ -260,7 +273,7 @@ export class CartService {
         };
       }),
       input.fromCart
-        ? (tx) => this.cart.removeInTx(tx, userId, itemIds)
+        ? (tx) => this.cart.removeInTx(tx, userId, listingIds)
         : undefined,
     );
   }
@@ -270,46 +283,48 @@ export class CartService {
     userId: string,
     lines: CheckoutLineDto[],
   ): Promise<ResolvedLine[]> {
-    const ids = lines.map((line) => line.itemId);
+    const ids = lines.map((line) => line.listingId);
     if (new Set(ids).size !== ids.length) {
-      throw new BadRequestException('An option appears twice');
+      throw new BadRequestException('A product appears twice');
     }
-    const items = new Map(
-      (await this.listings.findItems(ids)).map((item) => [item.id, item]),
+    const listings = new Map(
+      (await this.listings.findByIds(ids)).map((listing) => [
+        listing.id,
+        listing,
+      ]),
     );
     const now = new Date();
     return lines.map((line) => {
-      const item = items.get(line.itemId);
-      if (!item || !item.isActive || !isListingOpen(item.listing, now)) {
+      const listing = listings.get(line.listingId);
+      if (!listing || !isListingOpen(listing, now)) {
         throw new DomainException(
           409,
           'LISTING_NOT_OPEN',
           'This listing is not open for orders',
-          { itemId: line.itemId },
+          { listingId: line.listingId },
         );
       }
-      if (item.listing.sellerId === userId) {
+      if (listing.sellerId === userId) {
         throw new DomainException(
           422,
           'OWN_LISTING',
           'You cannot buy from your own listing',
         );
       }
-      const problem = quantityProblem(line.quantity, item.unit);
+      const problem = quantityProblem(line.quantity, listing.unit);
       if (problem) {
         throw new DomainException(422, 'INVALID_QUANTITY', problem, {
           problems: [problem],
-          itemId: line.itemId,
+          listingId: line.listingId,
         });
       }
-      return { item, listing: item.listing, quantity: line.quantity };
+      return { listing, quantity: line.quantity };
     });
   }
 
   private split(lines: ResolvedLine[]): PlannedOrder[] {
     return splitIntoOrders(
-      lines.map(({ item, listing }) => ({
-        itemId: item.id,
+      lines.map(({ listing }) => ({
         listingId: listing.id,
         sellerId: listing.sellerId,
         mode: listing.mode,
@@ -329,43 +344,33 @@ export class CartService {
     return methods;
   }
 
-  private toLine(item: ListingItem, quantity: string, now: Date): CartLineDto {
-    const listing = item.listing;
-    const stock =
-      item.stockQuantity === null ? null : Number(item.stockQuantity);
+  private toLine(listing: Listing, quantity: string, now: Date): CartLineDto {
     let problem: CartProblem | null = null;
     if (!isListingOpen(listing, now)) {
       problem = CartProblem.ListingNotOpen;
-    } else if (!item.isActive) {
-      problem = CartProblem.ItemRemoved;
-    } else if (
-      stock !== null &&
-      (toThousandths(item.stockQuantity as string) ?? 0) <
-        (toThousandths(normalize(quantity)) ?? 0)
-    ) {
+    } else if (exceedsStock(listing, normalize(quantity))) {
       problem = CartProblem.OutOfStock;
     }
     const image = listing.images[0];
+    const combos = combosOf(listing.combos);
     return {
-      itemId: item.id,
       listingId: listing.id,
-      listingTitle: listing.title,
+      title: listing.title,
       mode: listing.mode,
-      itemCount: listing.items.filter((candidate) => candidate.isActive).length,
-      itemName: item.name,
-      unit: item.unit,
-      unitPrice: item.unitPrice,
-      combos: combosOf(item),
+      unit: listing.unit,
+      unitPrice: listing.unitPrice,
+      combos,
       quantity: Number(quantity),
-      stockQuantity: stock,
+      stockQuantity:
+        listing.stockQuantity === null ? null : Number(listing.stockQuantity),
       thumbnailUrl: image ? mediaUrl(thumbnailKey(image.storageKey)) : null,
       orderDeadline: listing.orderDeadline?.toISOString() ?? null,
       lineTotal: lineTotalWithCombos(
-        item.unitPrice,
-        combosOf(item),
+        listing.unitPrice,
+        combos,
         normalize(quantity),
       ),
-      listTotal: lineTotal(item.unitPrice, normalize(quantity)),
+      listTotal: lineTotal(listing.unitPrice, normalize(quantity)),
       problem,
     };
   }
@@ -376,11 +381,11 @@ function normalize(quantity: string): string {
   return String(Number(quantity));
 }
 
-function combosOf(item: ListingItem): { quantity: string; price: number }[] {
-  return (item.combos ?? [])
-    .map((combo) => ({
-      quantity: normalize(combo.quantity),
-      price: combo.price,
-    }))
-    .sort((a, b) => Number(a.quantity) - Number(b.quantity));
+/** True when an in-stock product has less left than `quantity`. */
+function exceedsStock(listing: Listing, quantity: string): boolean {
+  return (
+    listing.stockQuantity !== null &&
+    (toThousandths(normalize(listing.stockQuantity)) ?? 0) <
+      (toThousandths(quantity) ?? 0)
+  );
 }

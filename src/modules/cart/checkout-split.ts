@@ -3,7 +3,6 @@ import { PaymentMethod } from '../orders/orders.constants.js';
 
 /** What the split needs to know about one line being bought. */
 export interface SplitLine {
-  itemId: string;
   listingId: string;
   sellerId: string;
   mode: ListingMode;
@@ -16,7 +15,7 @@ export interface PlannedOrder {
   /** Stable for the same selection: `seller:<id>` or `listing:<id>`. */
   key: string;
   sellerId: string;
-  itemIds: string[];
+  listingIds: string[];
   /** Methods every listing in the order accepts; never empty. */
   paymentMethods: PaymentMethod[];
 }
@@ -67,7 +66,7 @@ export function splitIntoOrders(
       orders.push({
         key,
         sellerId: grouped[0].sellerId,
-        itemIds: grouped.map((line) => line.itemId),
+        listingIds: grouped.map((line) => line.listingId),
         paymentMethods: shared,
       });
       continue;
@@ -76,7 +75,7 @@ export function splitIntoOrders(
       orders.push({
         key: `listing:${listingId}`,
         sellerId: listingLines[0].sellerId,
-        itemIds: listingLines.map((line) => line.itemId),
+        listingIds: listingLines.map((line) => line.listingId),
         paymentMethods: common([listingLines[0].paymentMethods]),
       });
     }

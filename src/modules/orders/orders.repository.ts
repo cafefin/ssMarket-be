@@ -31,8 +31,7 @@ export interface NewOrder {
 
 export interface NewOrderLine {
   listingId: string;
-  listingItemId: string;
-  itemName: string;
+  title: string;
   unit: string;
   unitPrice: number;
   quantity: string;
@@ -255,7 +254,7 @@ export class OrdersRepository {
     return ids.map((id) => byId.get(id) as Order);
   }
 
-  /** Orders that contain at least one option of the listing. */
+  /** Orders that contain the listing. */
   async countForListing(listingId: string): Promise<number> {
     const [row]: Array<{ count: number }> = await this.repository.query(
       `SELECT COUNT(DISTINCT order_id)::int AS count
@@ -266,7 +265,7 @@ export class OrdersRepository {
   }
 
   /**
-   * Every order holding an option of the listing, oldest first, for the
+   * Every order holding the listing, oldest first, for the
    * seller's summary. An in-stock order may also hold other listings' lines;
    * the caller keeps only this listing's.
    */
@@ -308,26 +307,22 @@ export class OrdersRepository {
           WHERE ol.listing_id = $1 AND o.fulfillment_status <> 'cancelled'`,
         [listingId],
       );
-    const quantities: Array<{ item_id: string; quantity: string }> =
-      await this.repository.query(
-        `SELECT ol.listing_item_id AS item_id, SUM(ol.quantity) AS quantity
-           FROM order_lines ol
-           JOIN orders o ON o.id = ol.order_id
-          WHERE ol.listing_id = $1 AND o.fulfillment_status <> 'cancelled'
-          GROUP BY ol.listing_item_id`,
-        [listingId],
-      );
+    const [quantity]: Array<{ quantity: string }> = await this.repository.query(
+      `SELECT COALESCE(SUM(ol.quantity), 0) AS quantity
+         FROM order_lines ol
+         JOIN orders o ON o.id = ol.order_id
+        WHERE ol.listing_id = $1 AND o.fulfillment_status <> 'cancelled'`,
+      [listingId],
+    );
     return {
       orderCount: money.order_count,
       totalAmount: Number(money.total),
       paidAmount: Number(money.paid),
-      quantities: Object.fromEntries(
-        quantities.map((row) => [row.item_id, Number(row.quantity)]),
-      ),
+      quantity: Number(quantity.quantity),
     };
   }
 
-  /** Which of the given orders hold at least one option of the listing. */
+  /** Which of the given orders hold the listing. */
   async ordersOfListing(
     orderIds: string[],
     listingId: string,
@@ -348,5 +343,6 @@ export interface ListingTotals {
   orderCount: number;
   totalAmount: number;
   paidAmount: number;
-  quantities: Record<string, number>;
+  /** Units ordered in live orders. */
+  quantity: number;
 }

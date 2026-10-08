@@ -12,7 +12,7 @@ const row = (overrides: Partial<SummaryRowDto> = {}): SummaryRowDto => ({
   code: 'SSM7K2Q9X',
   buyer: { name: 'Anh Minh', email: 'minh@example.com' },
   deliveryLocation: 'Tầng 7',
-  quantities: { cam: 1.5, buoi: 2 },
+  quantity: 1.5,
   totalAmount: 192500,
   paymentMethod: PaymentMethod.PrepaidQr,
   paymentStatus: PaymentStatus.Paid,
@@ -26,18 +26,15 @@ const row = (overrides: Partial<SummaryRowDto> = {}): SummaryRowDto => ({
 const summary = (rows: SummaryRowDto[] = [row()]): SalesSummaryDto => ({
   listing: {
     id: 'l1',
-    title: 'Hoa quả',
+    title: 'Cam sành',
+    unit: 'kg',
     orderDeadline: null,
     deliveryDate: null,
   },
-  items: [
-    { id: 'cam', name: 'Cam sành', unit: 'kg', isActive: true },
-    { id: 'buoi', name: 'Bưởi', unit: 'kg', isActive: true },
-  ],
   rows,
   totals: {
     orderCount: rows.length,
-    quantities: { cam: 1.5, buoi: 2 },
+    quantity: 1.5,
     totalAmount: 192500,
     paidAmount: 192500,
     outstandingAmount: 0,
@@ -55,22 +52,16 @@ describe('buildSummaryCsv', () => {
     expect(csv.replace(/\r\n/g, '')).not.toContain('\n');
   });
 
-  it('has one column per item between the buyer and the total', () => {
+  it('has a quantity column with the unit between the buyer and the total', () => {
     expect(linesOf(buildSummaryCsv(summary()))[0]).toBe(
-      'Mã đơn,Người mua,Email,Nơi giao,Cam sành (kg),Bưởi (kg),Tổng tiền,Hình thức,Thanh toán,Giao hàng,Ghi chú,Thời điểm đặt',
+      'Mã đơn,Người mua,Email,Nơi giao,Số lượng (kg),Tổng tiền,Hình thức,Thanh toán,Giao hàng,Ghi chú,Thời điểm đặt',
     );
   });
 
   it('writes an order with bare numbers, Vietnamese labels and local time', () => {
     expect(linesOf(buildSummaryCsv(summary()))[1]).toBe(
-      'SSM7K2Q9X,Anh Minh,minh@example.com,Tầng 7,1.5,2,192500,Chuyển khoản QR,Đã thanh toán,Chờ giao,,2026-10-06 10:05',
+      'SSM7K2Q9X,Anh Minh,minh@example.com,Tầng 7,1.5,192500,Chuyển khoản QR,Đã thanh toán,Chờ giao,,2026-10-06 10:05',
     );
-  });
-
-  it('leaves the cell empty for an item the buyer did not order', () => {
-    const csv = buildSummaryCsv(summary([row({ quantities: { buoi: 2 } })]));
-
-    expect(linesOf(csv)[1]).toContain('Tầng 7,,2,192500');
   });
 
   it('ends with totals, collected and outstanding rows of the same width', () => {
@@ -78,9 +69,9 @@ describe('buildSummaryCsv', () => {
     const width = lines[0].split(',').length;
 
     expect(lines.slice(-3)).toEqual([
-      'Tổng,1 đơn,,,1.5,2,192500,,,,,',
-      'Đã thu,,,,,,192500,,,,,',
-      'Còn phải thu,,,,,,0,,,,,',
+      'Tổng,1 đơn,,,1.5,192500,,,,,',
+      'Đã thu,,,,,192500,,,,,',
+      'Còn phải thu,,,,,0,,,,,',
     ]);
     for (const line of lines.slice(-3)) {
       expect(line.split(',')).toHaveLength(width);
@@ -125,7 +116,7 @@ describe('buildSummaryCsv', () => {
     const empty = summary([]);
     empty.totals = {
       orderCount: 0,
-      quantities: {},
+      quantity: 0,
       totalAmount: 0,
       paidAmount: 0,
       outstandingAmount: 0,
@@ -134,7 +125,7 @@ describe('buildSummaryCsv', () => {
     const lines = linesOf(buildSummaryCsv(empty));
 
     expect(lines).toHaveLength(4);
-    expect(lines[1]).toBe('Tổng,0 đơn,,,0,0,0,,,,,');
+    expect(lines[1]).toBe('Tổng,0 đơn,,,0,0,,,,,');
   });
 
   describe('in English', () => {
@@ -142,13 +133,13 @@ describe('buildSummaryCsv', () => {
 
     it('translates the header', () => {
       expect(lines[0]).toBe(
-        'Order code,Buyer,Email,Deliver to,Cam sành (kg),Bưởi (kg),Total,Method,Payment,Delivery,Note,Ordered at',
+        'Order code,Buyer,Email,Deliver to,Quantity (kg),Total,Method,Payment,Delivery,Note,Ordered at',
       );
     });
 
     it('translates the status labels and leaves data as it is', () => {
       expect(lines[1]).toBe(
-        'SSM7K2Q9X,Anh Minh,minh@example.com,Tầng 7,1.5,2,192500,QR transfer,Paid,Pending,,2026-10-06 10:05',
+        'SSM7K2Q9X,Anh Minh,minh@example.com,Tầng 7,1.5,192500,QR transfer,Paid,Pending,,2026-10-06 10:05',
       );
     });
 

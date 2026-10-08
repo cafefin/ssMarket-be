@@ -22,14 +22,9 @@ describe('Admin categories API', () => {
     description: 'Còn tốt',
     acceptsPrepaidQr: false,
     acceptsPayOnDelivery: true,
-    items: [
-      {
-        name: 'Clean Code',
-        unit: 'cái',
-        unitPrice: 150000,
-        stockQuantity: '1',
-      },
-    ],
+    unit: 'cái',
+    unitPrice: 150000,
+    stockQuantity: '1',
   });
 
   const restoreCategories = async () => {

@@ -8,8 +8,9 @@ import {
 import { UserLocale } from '../users/user.entity.js';
 
 interface CsvLabels {
-  headBeforeItems: [string, string, string, string];
-  headAfterItems: [string, string, string, string, string, string];
+  headBeforeQuantity: [string, string, string, string];
+  quantity: string;
+  headAfterQuantity: [string, string, string, string, string, string];
   paymentMethod: Record<PaymentMethod, string>;
   paymentStatus: Record<PaymentStatus, string>;
   fulfillmentStatus: Record<FulfillmentStatus, string>;
@@ -21,8 +22,9 @@ interface CsvLabels {
 
 const LABELS: Record<UserLocale, CsvLabels> = {
   [UserLocale.Vi]: {
-    headBeforeItems: ['Mã đơn', 'Người mua', 'Email', 'Nơi giao'],
-    headAfterItems: [
+    headBeforeQuantity: ['Mã đơn', 'Người mua', 'Email', 'Nơi giao'],
+    quantity: 'Số lượng',
+    headAfterQuantity: [
       'Tổng tiền',
       'Hình thức',
       'Thanh toán',
@@ -50,8 +52,9 @@ const LABELS: Record<UserLocale, CsvLabels> = {
     outstanding: 'Còn phải thu',
   },
   [UserLocale.En]: {
-    headBeforeItems: ['Order code', 'Buyer', 'Email', 'Deliver to'],
-    headAfterItems: [
+    headBeforeQuantity: ['Order code', 'Buyer', 'Email', 'Deliver to'],
+    quantity: 'Quantity',
+    headAfterQuantity: [
       'Total',
       'Method',
       'Payment',
@@ -120,13 +123,13 @@ export function buildSummaryCsv(
   locale: UserLocale = UserLocale.Vi,
 ): string {
   const labels = LABELS[locale];
-  const { items, rows, totals } = summary;
+  const { listing, rows, totals } = summary;
   const lines: (string | number | null)[][] = [];
 
   lines.push([
-    ...labels.headBeforeItems,
-    ...items.map((item) => `${item.name} (${item.unit})`),
-    ...labels.headAfterItems,
+    ...labels.headBeforeQuantity,
+    `${labels.quantity} (${listing.unit})`,
+    ...labels.headAfterQuantity,
   ]);
   for (const row of rows) {
     lines.push([
@@ -134,7 +137,7 @@ export function buildSummaryCsv(
       row.buyer.name,
       row.buyer.email,
       row.deliveryLocation,
-      ...items.map((item) => row.quantities[item.id] ?? null),
+      row.quantity,
       row.totalAmount,
       labels.paymentMethod[row.paymentMethod],
       labels.paymentStatus[row.paymentStatus],
@@ -144,14 +147,13 @@ export function buildSummaryCsv(
     ]);
   }
 
-  const blank = items.map(() => null);
   const tail = [null, null, null, null, null];
   lines.push([
     labels.total,
     labels.orders(totals.orderCount),
     null,
     null,
-    ...items.map((item) => totals.quantities[item.id] ?? 0),
+    totals.quantity,
     totals.totalAmount,
     ...tail,
   ]);
@@ -160,7 +162,7 @@ export function buildSummaryCsv(
     null,
     null,
     null,
-    ...blank,
+    null,
     totals.paidAmount,
     ...tail,
   ]);
@@ -169,7 +171,7 @@ export function buildSummaryCsv(
     null,
     null,
     null,
-    ...blank,
+    null,
     totals.outstandingAmount,
     ...tail,
   ]);

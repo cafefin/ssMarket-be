@@ -10,7 +10,7 @@ import { DomainException } from '../../common/errors/domain.exception.js';
 import type { Tx } from '../../database/transaction.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { UsersService } from '../users/users.service.js';
-import { ListingDetailDto } from './dto/listing-response.dto.js';
+import { emailHandle, ListingDetailDto } from './dto/listing-response.dto.js';
 import type {
   ListingPageDto,
   ListingSummaryDto,
@@ -27,7 +27,6 @@ import {
   suggestReopenDates,
   validateListingInput,
 } from './listing-rules.js';
-import type { ListingItem } from './listing-item.entity.js';
 import type { Listing } from './listing.entity.js';
 import {
   CONDITION_PERCENT,
@@ -39,7 +38,7 @@ import {
   ListingStatus,
 } from './listings.constants.js';
 import {
-  type ListingItemFields,
+  type ComboFields,
   ListingsRepository,
   type OpenListingRow,
   type StockLine,
@@ -87,8 +86,7 @@ export class ListingsService {
         closedAt: null,
         ...this.editableFields(input),
       },
-      // A new listing has no existing items; ids sent by the client are ignored.
-      this.itemFields(input, { keepIds: false }),
+      this.comboFields(input),
     );
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -108,17 +106,11 @@ export class ListingsService {
       throw new BadRequestException('The mode of a listing cannot be changed');
     }
     await this.assertValid(sellerId, input, listing.categoryId);
-    const own = new Set(listing.items.map((item) => item.id));
-    if (input.items.some((item) => item.id && !own.has(item.id))) {
-      throw new BadRequestException(
-        'An item id does not belong to this listing',
-      );
-    }
 
     await this.listings.update(
       id,
       this.editableFields(input),
-      this.itemFields(input, { keepIds: true }),
+      this.comboFields(input),
     );
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -171,7 +163,7 @@ export class ListingsService {
 
   /**
    * Starts the next round of a finished pre-order: a new draft with the same
-   * items, prices and photos, linked to the round it came from. The source
+   * price, combos and photos, linked to the round it came from. The source
    * listing and its orders are left exactly as they are.
    */
   async reopen(sellerId: string, id: string): Promise<Listing> {
@@ -188,20 +180,6 @@ export class ListingsService {
       throw this.invalidState('Only a finished round can be reopened');
     }
 
-    const items = source.items
-      .filter((item) => item.isActive)
-      .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map((item, index) => ({
-        name: item.name,
-        unit: item.unit,
-        unitPrice: item.unitPrice,
-        stockQuantity: null,
-        sortOrder: index,
-        combos: (item.combos ?? []).map((combo) => ({
-          quantity: combo.quantity,
-          price: combo.price,
-        })),
-      }));
     const newId = await this.listings.insert(
       {
         sellerId,
@@ -214,17 +192,19 @@ export class ListingsService {
         acceptsPayOnDelivery: source.acceptsPayOnDelivery,
         condition: null,
         conditionPercent: null,
+        unit: source.unit,
+        unitPrice: source.unitPrice,
+        stockQuantity: null,
         ...suggestReopenDates(source.orderDeadline, source.deliveryDate, now),
-        searchText: buildSearchText({
-          title: source.title,
-          description: source.description,
-          items,
-        }),
+        searchText: buildSearchText(source),
         publishedAt: null,
         closedAt: null,
         reopenedFromId: source.id,
       },
-      items,
+      (source.combos ?? []).map((combo) => ({
+        quantity: combo.quantity,
+        price: combo.price,
+      })),
     );
     await this.images.copyAll(source.images, newId);
 
@@ -386,11 +366,11 @@ export class ListingsService {
   }
 
   /**
-   * Options by id with their listing, for the cart. Missing ids are left
-   * out; the caller decides what a removed option means.
+   * Listings by id, for the cart. Missing ids are left out; the caller
+   * decides what a removed listing means.
    */
-  findItems(ids: string[]): Promise<ListingItem[]> {
-    return this.listings.findItems(ids);
+  findByIds(ids: string[]): Promise<Listing[]> {
+    return this.listings.findByIds(ids);
   }
 
   /** Any listing by id, for modules that apply their own access rules. */
@@ -460,6 +440,7 @@ export class ListingsService {
       seller: {
         id: row.seller_id,
         name: row.seller_name,
+        handle: emailHandle(row.seller_email),
         avatarUrl: row.seller_avatar_url,
       },
       thumbnailUrl: row.image_key
@@ -468,11 +449,9 @@ export class ListingsService {
       orderCount: row.order_count,
       stockQuantity:
         row.stock_quantity === null ? null : Number(row.stock_quantity),
-      minUnitPrice: row.min_unit_price,
-      minPriceUnit: row.min_price_unit,
-      itemCount: row.item_count,
+      unitPrice: row.unit_price,
+      unit: row.unit,
       hasCombos: row.has_combos,
-      singleItemId: row.single_item_id,
       condition: row.condition,
       conditionPercent: row.condition_percent,
       orderDeadline: row.order_deadline?.toISOString() ?? null,
@@ -563,22 +542,17 @@ export class ListingsService {
       conditionPercent: input.condition
         ? CONDITION_PERCENT[input.condition]
         : null,
+      unit: input.unit,
+      unitPrice: input.unitPrice,
+      stockQuantity: input.stockQuantity,
       searchText: buildSearchText(input),
     };
   }
 
-  private itemFields(
-    input: ListingInput,
-    options: { keepIds: boolean },
-  ): ListingItemFields[] {
-    return input.items.map((item, index) => ({
-      ...(options.keepIds && item.id ? { id: item.id } : {}),
-      name: item.name.trim(),
-      unit: item.unit,
-      unitPrice: item.unitPrice,
-      stockQuantity: item.stockQuantity,
-      sortOrder: index,
-      combos: item.combos,
+  private comboFields(input: ListingInput): ComboFields[] {
+    return input.combos.map((combo) => ({
+      quantity: combo.quantity,
+      price: combo.price,
     }));
   }
 }

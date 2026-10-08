@@ -19,9 +19,9 @@ const listingBody = {
   description: '',
   acceptsPrepaidQr: false,
   acceptsPayOnDelivery: true,
-  items: [
-    { name: 'Loa JBL', unit: 'cái', unitPrice: 500000, stockQuantity: '1' },
-  ],
+  unit: 'cái',
+  unitPrice: 500000,
+  stockQuantity: '1',
 };
 
 type Image = { id: string; url: string; thumbnailUrl: string };

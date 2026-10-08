@@ -3,7 +3,6 @@ import {
   isListingOpen,
   suggestReopenDates,
   type ListingInput,
-  type ListingItemInput,
   validateListingInput,
 } from './listing-rules.js';
 import {
@@ -13,15 +12,6 @@ import {
 } from './listings.constants.js';
 import { mediaUrl, thumbnailKey } from './media-url.js';
 import { buildSearchText } from './search-text.js';
-
-const item = (overrides: Partial<ListingItemInput> = {}): ListingItemInput => ({
-  name: 'Loa JBL Go 3',
-  unit: 'cái',
-  unitPrice: 500_000,
-  stockQuantity: '1',
-  combos: [],
-  ...overrides,
-});
 
 const inStock = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   mode: ListingMode.InStock,
@@ -33,7 +23,10 @@ const inStock = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   orderDeadline: null,
   deliveryDate: null,
   condition: ListingCondition.LikeNew,
-  items: [item()],
+  unit: 'cái',
+  unitPrice: 500_000,
+  stockQuantity: '1',
+  combos: [],
   ...overrides,
 });
 
@@ -48,14 +41,10 @@ const preorder = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   orderDeadline: new Date('2026-10-09T10:00:00Z'),
   deliveryDate: '2026-10-12',
   condition: null,
-  items: [
-    item({
-      name: 'Cam sành',
-      unit: 'kg',
-      unitPrice: 35_000,
-      stockQuantity: null,
-    }),
-  ],
+  unit: 'kg',
+  unitPrice: 35_000,
+  stockQuantity: null,
+  combos: [],
   ...overrides,
 });
 
@@ -81,66 +70,51 @@ describe('validateListingInput', () => {
       inStock({ description: 'a'.repeat(5001) }),
       'description must be at most 5000 characters',
     ],
-    ['no items', inStock({ items: [] }), 'a listing needs 1-10 items'],
-    [
-      'too many items',
-      inStock({ items: Array.from({ length: 11 }, () => item()) }),
-      'a listing needs 1-10 items',
-    ],
     [
       'no payment method',
       inStock({ acceptsPayOnDelivery: false }),
       'at least one payment method is required',
     ],
-    [
-      'an empty item name',
-      inStock({ items: [item({ name: '  ' })] }),
-      'item 1: name must be 1-120 characters',
-    ],
-    [
-      'an unknown unit',
-      inStock({ items: [item({ unit: 'thùng' })] }),
-      'item 1: unit is not supported',
-    ],
+    ['an unknown unit', inStock({ unit: 'thùng' }), 'unit is not supported'],
     [
       'a price below the minimum',
-      inStock({ items: [item({ unitPrice: 999 })] }),
-      'item 1: unit price must be a whole number from 1000 to 1000000000',
+      inStock({ unitPrice: 999 }),
+      'unit price must be a whole number from 1000 to 1000000000',
     ],
     [
       'a price above the maximum',
-      inStock({ items: [item({ unitPrice: 1_000_000_001 })] }),
-      'item 1: unit price must be a whole number from 1000 to 1000000000',
+      inStock({ unitPrice: 1_000_000_001 }),
+      'unit price must be a whole number from 1000 to 1000000000',
     ],
     [
       'a fractional price',
-      inStock({ items: [item({ unitPrice: 1000.5 })] }),
-      'item 1: unit price must be a whole number from 1000 to 1000000000',
+      inStock({ unitPrice: 1000.5 }),
+      'unit price must be a whole number from 1000 to 1000000000',
     ],
     [
-      'an in-stock item without stock',
-      inStock({ items: [item({ stockQuantity: null })] }),
-      'item 1: stock is required for in-stock listings',
+      'an in-stock product without stock',
+      inStock({ stockQuantity: null }),
+      'stock is required for in-stock products',
     ],
     [
       'zero stock',
-      inStock({ items: [item({ stockQuantity: '0' })] }),
-      'item 1: stock must be greater than 0 with at most 3 decimals',
+      inStock({ stockQuantity: '0' }),
+      'stock must be greater than 0 with at most 3 decimals',
     ],
     [
       'stock with four decimals',
-      inStock({ items: [item({ unit: 'kg', stockQuantity: '1.2345' })] }),
-      'item 1: stock must be greater than 0 with at most 3 decimals',
+      inStock({ unit: 'kg', stockQuantity: '1.2345' }),
+      'stock must be greater than 0 with at most 3 decimals',
     ],
     [
       'stock that is not a number',
-      inStock({ items: [item({ stockQuantity: '-1' })] }),
-      'item 1: stock must be greater than 0 with at most 3 decimals',
+      inStock({ stockQuantity: '-1' }),
+      'stock must be greater than 0 with at most 3 decimals',
     ],
     [
       'fractional stock for a unit other than kg',
-      inStock({ items: [item({ unit: 'hộp', stockQuantity: '1.5' })] }),
-      'item 1: only kg may have fractional stock',
+      inStock({ unit: 'hộp', stockQuantity: '1.5' }),
+      'only kg may have fractional stock',
     ],
     [
       'an in-stock listing with a deadline',
@@ -148,9 +122,9 @@ describe('validateListingInput', () => {
       'in-stock listings do not have an order deadline or delivery date',
     ],
     [
-      'a pre-order item with stock',
-      preorder({ items: [item({ unit: 'kg', stockQuantity: '10' })] }),
-      'item 1: pre-order items do not have stock',
+      'a pre-order with stock',
+      preorder({ unit: 'kg', stockQuantity: '10' }),
+      'pre-orders do not have stock',
     ],
     [
       'a pre-order without a deadline',
@@ -178,9 +152,7 @@ describe('validateListingInput', () => {
 
   it('allows fractional stock for kg and delivery on the deadline day', () => {
     expect(
-      validateListingInput(
-        inStock({ items: [item({ unit: 'kg', stockQuantity: '2.5' })] }),
-      ),
+      validateListingInput(inStock({ unit: 'kg', stockQuantity: '2.5' })),
     ).toEqual([]);
     expect(
       validateListingInput(preorder({ deliveryDate: '2026-10-09' })),
@@ -201,7 +173,7 @@ describe('validateListingInput', () => {
 
   it('reports every problem at once', () => {
     const problems = validateListingInput(
-      inStock({ title: 'abc', items: [item({ unit: 'x', unitPrice: 1 })] }),
+      inStock({ title: 'abc', unit: 'x', unitPrice: 1 }),
     );
 
     expect(problems).toHaveLength(3);
@@ -209,12 +181,8 @@ describe('validateListingInput', () => {
 });
 
 describe('condition', () => {
-  it('accepts ten options and the condition of in-stock goods', () => {
-    expect(
-      validateListingInput(
-        inStock({ items: Array.from({ length: 10 }, () => item()) }),
-      ),
-    ).toEqual([]);
+  it('accepts the condition of in-stock goods', () => {
+    expect(validateListingInput(inStock())).toEqual([]);
   });
 
   it('requires a condition for in-stock goods outside food', () => {
@@ -244,10 +212,7 @@ describe('combos', () => {
   const withCombos = (
     unit: string,
     combos: { quantity: string; price: number }[],
-  ) =>
-    inStock({
-      items: [item({ unit, unitPrice: 10_000, stockQuantity: '500', combos })],
-    });
+  ) => inStock({ unit, unitPrice: 10_000, stockQuantity: '500', combos });
 
   it('accepts up to three combos that are cheaper than buying singly', () => {
     expect(
@@ -271,25 +236,25 @@ describe('combos', () => {
       'four combos',
       'cái',
       [2, 3, 4, 5].map((n) => ({ quantity: String(n), price: n * 9_000 })),
-      'item 1: at most 3 combos',
+      'at most 3 combos',
     ],
     [
       'a combo of one piece',
       'cái',
       [{ quantity: '1', price: 9_000 }],
-      'item 1, combo 1: quantity must be more than one unit and a multiple of it',
+      'combo 1: quantity must be more than one unit and a multiple of it',
     ],
     [
       'half a piece',
       'cái',
       [{ quantity: '2.5', price: 20_000 }],
-      'item 1, combo 1: quantity must be more than one unit and a multiple of it',
+      'combo 1: quantity must be more than one unit and a multiple of it',
     ],
     [
       'kg finer than 0.1',
       'kg',
       [{ quantity: '1.25', price: 10_000 }],
-      'item 1, combo 1: quantity must be more than one 0.1 kg step and a multiple of it',
+      'combo 1: quantity must be more than one 0.1 kg step and a multiple of it',
     ],
     [
       'the same size twice',
@@ -298,19 +263,19 @@ describe('combos', () => {
         { quantity: '10', price: 90_000 },
         { quantity: '10', price: 80_000 },
       ],
-      'item 1, combo 2: another combo has the same quantity',
+      'combo 2: another combo has the same quantity',
     ],
     [
       'a combo that saves nothing',
       'cái',
       [{ quantity: '10', price: 100_000 }],
-      'item 1, combo 1: must cost less than buying the same quantity singly',
+      'combo 1: must cost less than buying the same quantity singly',
     ],
     [
       'a price below the minimum',
       'cái',
       [{ quantity: '10', price: 500 }],
-      'item 1, combo 1: price must be a whole number from 1000 to 1000000000',
+      'combo 1: price must be a whole number from 1000 to 1000000000',
     ],
   ])('refuses %s', (_label, unit, combos, message) => {
     expect(validateListingInput(withCombos(unit, combos))).toContain(message);
@@ -336,14 +301,13 @@ describe('isListingOpen', () => {
 });
 
 describe('buildSearchText', () => {
-  it('joins title, description and item names in the search normal form', () => {
+  it('joins title and description in the search normal form', () => {
     expect(
       buildSearchText({
-        title: 'Hoa quả tuần 41',
+        title: 'Cam sành Hà Giang',
         description: 'Giao tận TẦNG',
-        items: [{ name: 'Cam sành' }, { name: 'Bưởi da xanh' }],
       }),
-    ).toBe('hoa qua tuan 41 giao tan tang cam sanh buoi da xanh');
+    ).toBe('cam sanh ha giang giao tan tang');
   });
 });
 

@@ -23,32 +23,36 @@ export class CartRepository {
     return this.repository.count({ where: { userId } });
   }
 
-  findLine(userId: string, itemId: string): Promise<CartLine | null> {
+  findLine(userId: string, listingId: string): Promise<CartLine | null> {
     return this.repository.findOne({
-      where: { userId, listingItemId: itemId },
+      where: { userId, listingId },
     });
   }
 
-  /** Adds the option or replaces its quantity. */
+  /** Adds the product or replaces its quantity. */
   async upsert(
     userId: string,
-    itemId: string,
+    listingId: string,
     quantity: string,
   ): Promise<void> {
     await this.repository.upsert(
-      { userId, listingItemId: itemId, quantity },
-      { conflictPaths: ['userId', 'listingItemId'] },
+      { userId, listingId, quantity },
+      { conflictPaths: ['userId', 'listingId'] },
     );
   }
 
-  async remove(userId: string, itemId: string): Promise<void> {
-    await this.repository.delete({ userId, listingItemId: itemId });
+  async remove(userId: string, listingId: string): Promise<void> {
+    await this.repository.delete({ userId, listingId });
   }
 
-  /** Removes bought options inside the checkout's transaction. */
-  async removeInTx(tx: Tx, userId: string, itemIds: string[]): Promise<void> {
-    if (itemIds.length > 0) {
-      await tx.delete(CartLine, { userId, listingItemId: In(itemIds) });
+  /** Removes bought products inside the checkout's transaction. */
+  async removeInTx(
+    tx: Tx,
+    userId: string,
+    listingIds: string[],
+  ): Promise<void> {
+    if (listingIds.length > 0) {
+      await tx.delete(CartLine, { userId, listingId: In(listingIds) });
     }
   }
 }

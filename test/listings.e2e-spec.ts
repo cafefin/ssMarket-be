@@ -14,14 +14,9 @@ const inStock = {
   description: 'Còn mới 90%',
   acceptsPrepaidQr: false,
   acceptsPayOnDelivery: true,
-  items: [
-    {
-      name: 'Loa JBL Go 3',
-      unit: 'cái',
-      unitPrice: 500000,
-      stockQuantity: '1',
-    },
-  ],
+  unit: 'cái',
+  unitPrice: 500000,
+  stockQuantity: '1',
 };
 
 const preorder = () => ({
@@ -35,10 +30,8 @@ const preorder = () => ({
   deliveryDate: new Date(Date.now() + 5 * 86_400_000)
     .toISOString()
     .slice(0, 10),
-  items: [
-    { name: 'Cam sành', unit: 'kg', unitPrice: 35000 },
-    { name: 'Bưởi da xanh', unit: 'kg', unitPrice: 60000 },
-  ],
+  unit: 'kg',
+  unitPrice: 35000,
 });
 
 const bank = {
@@ -95,8 +88,11 @@ describe('Listings API', () => {
       expect(page.body.items[0]).toMatchObject({
         condition: 'good',
         conditionPercent: 90,
-        itemCount: 1,
-        singleItemId: detail.body.items[0].id,
+        unitPrice: 500000,
+        unit: 'cái',
+        stockQuantity: 1,
+        hasCombos: false,
+        seller: { name: 'seller', handle: 'seller' },
         category: { id: 4, isPerishable: false },
       });
     });
@@ -143,19 +139,15 @@ describe('Listings API', () => {
         orderDeadline: null,
         deliveryDate: null,
         publishedAt: null,
-        items: [
-          {
-            name: 'Loa JBL Go 3',
-            unit: 'cái',
-            unitPrice: 500000,
-            stockQuantity: 1,
-          },
-        ],
+        unit: 'cái',
+        unitPrice: 500000,
+        stockQuantity: 1,
+        combos: [],
         images: [],
       });
     });
 
-    it('creates a pre-order draft with unlimited items in the given order', async () => {
+    it('creates a pre-order draft without stock', async () => {
       const body = preorder();
 
       const response = await seller.post('/listings').send(body).expect(201);
@@ -164,10 +156,9 @@ describe('Listings API', () => {
         mode: 'preorder',
         deliveryDate: body.deliveryDate,
         orderDeadline: body.orderDeadline,
-        items: [
-          { name: 'Cam sành', stockQuantity: null },
-          { name: 'Bưởi da xanh', stockQuantity: null },
-        ],
+        unit: 'kg',
+        unitPrice: 35000,
+        stockQuantity: null,
       });
     });
 
@@ -182,8 +173,8 @@ describe('Listings API', () => {
         'in-stock listings do not have',
       ],
       [
-        'an in-stock item without stock',
-        { ...inStock, items: [{ name: 'Loa', unit: 'cái', unitPrice: 5000 }] },
+        'an in-stock product without stock',
+        { ...inStock, stockQuantity: null },
         'stock is required',
       ],
       [
@@ -212,7 +203,7 @@ describe('Listings API', () => {
         .post('/listings')
         .send({
           ...inStock,
-          items: [{ name: 'Loa', unit: 'cái', unitPrice: 'free' }],
+          unitPrice: 'free',
         })
         .expect(400);
 
@@ -268,40 +259,34 @@ describe('Listings API', () => {
   });
 
   describe('PATCH /listings/:id', () => {
-    it('replaces the fields and the item list', async () => {
-      const id = await createDraft();
+    it('replaces the fields, price, stock and combos', async () => {
+      const id = await createDraft({
+        ...inStock,
+        combos: [{ quantity: '2', price: 900000 }],
+      });
 
       const response = await seller
         .patch(`/listings/${id}`)
         .send({
           ...inStock,
           title: 'Loa bluetooth giá tốt',
-          items: [
-            {
-              name: 'Loa Sony',
-              unit: 'cái',
-              unitPrice: 700000,
-              stockQuantity: '2',
-            },
-            {
-              name: 'Dây sạc',
-              unit: 'cái',
-              unitPrice: 20000,
-              stockQuantity: '5',
-            },
-          ],
+          unitPrice: 700000,
+          stockQuantity: '2',
+          combos: [{ quantity: '2', price: 1300000 }],
         })
         .expect(200);
 
       expect(response.body).toMatchObject({
         title: 'Loa bluetooth giá tốt',
-        items: [{ name: 'Loa Sony' }, { name: 'Dây sạc' }],
+        unitPrice: 700000,
+        stockQuantity: 2,
+        combos: [{ quantity: '2', price: 1300000 }],
       });
       const rows: Array<{ count: string }> = await dataSource.query(
-        'SELECT COUNT(*) AS count FROM listing_items WHERE listing_id = $1',
+        'SELECT COUNT(*) AS count FROM listing_combos WHERE listing_id = $1',
         [id],
       );
-      expect(Number(rows[0].count)).toBe(2);
+      expect(Number(rows[0].count)).toBe(1);
     });
 
     it('refuses to change the mode or to edit a closed listing', async () => {
@@ -422,8 +407,9 @@ describe('Listings API', () => {
         category: { slug: 'thuc-pham-tuoi' },
         seller: { name: 'seller' },
         thumbnailUrl: null,
-        minUnitPrice: 35000,
-        minPriceUnit: 'kg',
+        unitPrice: 35000,
+        unit: 'kg',
+        stockQuantity: null,
       });
       expect((response.body as Page).nextCursor).toBeNull();
     });
@@ -438,11 +424,11 @@ describe('Listings API', () => {
       ).toEqual(['Hoa quả tuần 41']);
     });
 
-    it('finds a listing by an item name and by a prefix', async () => {
+    it('finds a listing by its description and by a prefix', async () => {
       await createOpen({
         ...inStock,
         title: 'Thanh lý đồ cũ',
-        description: '',
+        description: 'Loa JBL Go 3',
       });
       await createOpen(preorder());
 

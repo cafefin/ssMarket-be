@@ -2,8 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { type EntityManager, Repository } from 'typeorm';
 import type { Tx } from '../../database/transaction.js';
-import { ListingItemCombo } from './listing-item-combo.entity.js';
-import { ListingItem } from './listing-item.entity.js';
+import { ListingCombo } from './listing-combo.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
 import {
@@ -28,21 +27,18 @@ export interface ListingFields {
   searchText: string;
   condition: ListingCondition | null;
   conditionPercent: number | null;
+  unit: string;
+  unitPrice: number;
+  stockQuantity: string | null;
   publishedAt: Date | null;
   closedAt: Date | null;
   /** The listing this one was reopened from, if any. */
   reopenedFromId?: string | null;
 }
 
-export interface ListingItemFields {
-  /** Present to update that item in place; absent to insert a new one. */
-  id?: string;
-  name: string;
-  unit: string;
-  unitPrice: number;
-  stockQuantity: string | null;
-  sortOrder: number;
-  combos: { quantity: string; price: number }[];
+export interface ComboFields {
+  quantity: string;
+  price: number;
 }
 
 export interface OpenListingSearch {
@@ -52,7 +48,7 @@ export interface OpenListingSearch {
   mode: ListingMode | null;
   sort: ListingSort;
   sellerId: string | null;
-  /** Bounds on the cheapest option's unit price, integer VND. */
+  /** Bounds on the unit price, integer VND. */
   minPrice: number | null;
   maxPrice: number | null;
   /** Keep only listings whose condition is at least this percentage. */
@@ -77,19 +73,25 @@ export interface OpenListingRow {
   category_is_perishable: boolean;
   condition: ListingCondition | null;
   condition_percent: number | null;
-  item_count: number;
-  single_item_id: string | null;
+  unit: string;
+  unit_price: number;
+  /** Null for a pre-order. */
+  stock_quantity: string | null;
   has_combos: boolean;
   seller_id: string;
   seller_name: string;
+  seller_email: string;
   seller_avatar_url: string | null;
   image_key: string | null;
-  min_unit_price: number;
-  min_price_unit: string;
   order_count: number;
-  /** Set only for an in-stock listing with exactly one, limited, item. */
-  stock_quantity: string | null;
 }
+
+const RELATIONS = {
+  seller: true,
+  category: true,
+  combos: true,
+  images: true,
+};
 
 @Injectable()
 export class ListingsRepository {
@@ -101,127 +103,55 @@ export class ListingsRepository {
   findByIdWithRelations(id: string): Promise<Listing | null> {
     return this.repository.findOne({
       where: { id },
-      relations: {
-        seller: true,
-        category: true,
-        items: { combos: true },
-        images: true,
-      },
-      order: { items: { sortOrder: 'ASC' }, images: { sortOrder: 'ASC' } },
+      relations: RELATIONS,
+      order: { images: { sortOrder: 'ASC' } },
     });
   }
 
-  /** Options by id, each with its combos and its listing (seller, photos, options). */
-  findItems(ids: string[]): Promise<ListingItem[]> {
+  /** Listings by id with seller, combos and photos, for the cart. */
+  findByIds(ids: string[]): Promise<Listing[]> {
     if (ids.length === 0) {
       return Promise.resolve([]);
     }
-    return this.repository.manager.find(ListingItem, {
+    return this.repository.find({
       where: ids.map((id) => ({ id })),
-      relations: {
-        combos: true,
-        listing: { seller: true, images: true, items: true },
-      },
-      order: { listing: { images: { sortOrder: 'ASC' } } },
+      relations: RELATIONS,
+      order: { images: { sortOrder: 'ASC' } },
     });
   }
 
   findBySeller(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.repository.find({
       where: { sellerId, ...(status ? { status } : {}) },
-      relations: {
-        seller: true,
-        category: true,
-        items: { combos: true },
-        images: true,
-      },
-      order: {
-        createdAt: 'DESC',
-        items: { sortOrder: 'ASC' },
-        images: { sortOrder: 'ASC' },
-      },
+      relations: RELATIONS,
+      order: { createdAt: 'DESC', images: { sortOrder: 'ASC' } },
     });
   }
 
-  /** Inserts the listing and its items in one transaction; returns the id. */
-  insert(fields: ListingFields, items: ListingItemFields[]): Promise<string> {
+  /** Inserts the listing and its combos in one transaction; returns the id. */
+  insert(fields: ListingFields, combos: ComboFields[]): Promise<string> {
     return this.repository.manager.transaction(async (manager) => {
       const result = await manager.insert(Listing, fields);
       const id = result.identifiers[0].id as string;
-      for (const { combos, ...item } of items) {
-        const inserted = await manager.insert(ListingItem, {
-          ...item,
-          listingId: id,
-        });
-        await insertCombos(
-          manager,
-          inserted.identifiers[0].id as string,
-          combos,
-        );
-      }
+      await insertCombos(manager, id, combos);
       return id;
     });
   }
 
   /**
-   * Updates scalar columns and, when `items` is given, makes the item list
-   * match it, in one transaction: items with an id are updated in place (so
-   * orders that reference them stay valid), items without an id are
-   * inserted, and items left out are deleted, or only deactivated when
-   * someone has already ordered them.
+   * Updates scalar columns and, when `combos` is given, replaces the
+   * combos, in one transaction.
    */
   async update(
     id: string,
     fields: Partial<ListingFields>,
-    items?: ListingItemFields[],
+    combos?: ComboFields[],
   ): Promise<void> {
     await this.repository.manager.transaction(async (manager) => {
       await manager.update(Listing, { id }, fields);
-      if (!items) {
-        return;
-      }
-
-      const kept = new Set(items.flatMap((item) => (item.id ? [item.id] : [])));
-      const existing = await manager.find(ListingItem, {
-        where: { listingId: id },
-      });
-      for (const item of existing.filter(
-        (candidate) => !kept.has(candidate.id),
-      )) {
-        const ordered: unknown[] = await manager.query(
-          `SELECT 1 FROM order_lines WHERE listing_item_id = $1 LIMIT 1`,
-          [item.id],
-        );
-        if (ordered.length > 0) {
-          await manager.update(
-            ListingItem,
-            { id: item.id },
-            { isActive: false },
-          );
-        } else {
-          await manager.delete(ListingItem, { id: item.id });
-        }
-      }
-
-      for (const { combos, ...item } of items) {
-        let itemId: string;
-        if (item.id) {
-          const { id: existingId, ...values } = item;
-          itemId = existingId;
-          await manager.update(
-            ListingItem,
-            { id: itemId, listingId: id },
-            { ...values, isActive: true },
-          );
-          await manager.delete(ListingItemCombo, { listingItemId: itemId });
-        } else {
-          const inserted = await manager.insert(ListingItem, {
-            ...item,
-            listingId: id,
-          });
-          itemId = inserted.identifiers[0].id as string;
-        }
-        await insertCombos(manager, itemId, combos);
+      if (combos) {
+        await manager.delete(ListingCombo, { listingId: id });
+        await insertCombos(manager, id, combos);
       }
     });
   }
@@ -229,9 +159,8 @@ export class ListingsRepository {
   /**
    * Open listings for the browse page. Returns up to `limit` rows; ask for
    * one more than a page to learn whether another page exists. The first
-   * image and the cheapest item come from lateral subqueries, so the list
-   * costs one query regardless of its length. Every value is a bound
-   * parameter.
+   * image comes from a lateral subquery, so the list costs one query
+   * regardless of its length. Every value is a bound parameter.
    */
   searchOpen(search: OpenListingSearch): Promise<OpenListingRow[]> {
     const params: unknown[] = [search.now];
@@ -247,15 +176,19 @@ export class ListingsRepository {
     if (search.mode !== null) {
       where.push(`l.mode = ${bind(search.mode)}::listings_mode_enum`);
     }
+    if (search.mode === 'in_stock') {
+      // "In stock" means something can still be bought.
+      where.push('l.stock_quantity > 0');
+    }
 
     if (search.sellerId !== null) {
       where.push(`l.seller_id = ${bind(search.sellerId)}::uuid`);
     }
     if (search.minPrice !== null) {
-      where.push(`cheapest.unit_price >= ${bind(search.minPrice)}`);
+      where.push(`l.unit_price >= ${bind(search.minPrice)}`);
     }
     if (search.maxPrice !== null) {
-      where.push(`cheapest.unit_price <= ${bind(search.maxPrice)}`);
+      where.push(`l.unit_price <= ${bind(search.maxPrice)}`);
     }
     if (search.minConditionPercent !== null) {
       where.push(`l.condition_percent >= ${bind(search.minConditionPercent)}`);
@@ -297,21 +230,14 @@ export class ListingsRepository {
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
         c.name_en AS category_name_en, c.is_perishable AS category_is_perishable,
         l.condition, l.condition_percent,
-        stock.item_count,
-        EXISTS (
-          SELECT 1 FROM listing_item_combos lc
-          JOIN listing_items li ON li.id = lc.listing_item_id
-          WHERE li.listing_id = l.id AND li.is_active
-        ) AS has_combos,
-        CASE WHEN stock.item_count = 1 THEN stock.only_id END AS single_item_id,
-        u.id AS seller_id, u.name AS seller_name, u.avatar_url AS seller_avatar_url,
+        l.unit, l.unit_price, l.stock_quantity,
+        EXISTS (SELECT 1 FROM listing_combos lc WHERE lc.listing_id = l.id) AS has_combos,
+        u.id AS seller_id, u.name AS seller_name, u.email AS seller_email,
+        u.avatar_url AS seller_avatar_url,
         image.storage_key AS image_key,
-        cheapest.unit_price AS min_unit_price, cheapest.unit AS min_price_unit,
         (SELECT COUNT(DISTINCT o.id)::int FROM order_lines ol
            JOIN orders o ON o.id = ol.order_id
-          WHERE ol.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count,
-        CASE WHEN l.mode = 'in_stock' AND stock.item_count = 1
-             THEN stock.only_stock END AS stock_quantity
+          WHERE ol.listing_id = l.id AND o.fulfillment_status <> 'cancelled') AS order_count
       FROM listings l
       JOIN categories c ON c.id = l.category_id
       JOIN users u ON u.id = l.seller_id
@@ -319,15 +245,6 @@ export class ListingsRepository {
         SELECT storage_key FROM listing_images
         WHERE listing_id = l.id ORDER BY sort_order LIMIT 1
       ) image ON true
-      JOIN LATERAL (
-        SELECT unit_price, unit FROM listing_items
-        WHERE listing_id = l.id AND is_active ORDER BY unit_price, sort_order LIMIT 1
-      ) cheapest ON true
-      JOIN LATERAL (
-        SELECT COUNT(*)::int AS item_count, MIN(stock_quantity) AS only_stock,
-               MIN(id::text)::uuid AS only_id
-        FROM listing_items WHERE listing_id = l.id AND is_active
-      ) stock ON true
       WHERE ${where.join(' AND ')}
       ORDER BY ${orderBy.join(', ')}
       LIMIT ${bind(search.limit)} ${offset}
@@ -338,39 +255,37 @@ export class ListingsRepository {
 
   /**
    * Takes the quantities out of stock inside the caller's transaction.
-   * Returns the items that did not have enough (empty when all succeeded);
-   * the caller must then roll back.
+   * Returns the products that did not have enough (empty when all
+   * succeeded); the caller must then roll back.
    *
    * Each UPDATE checks and decrements in one statement, so two buyers can
    * never both get the last unit. Rows are locked in id order so that two
-   * orders containing the same items cannot deadlock. For unlimited items
-   * the stock is NULL and stays NULL.
+   * orders containing the same products cannot deadlock. Pre-orders have no
+   * stock (NULL) and stay NULL.
    */
   async reserveStock(
     tx: Tx,
     lines: ReadonlyArray<StockLine>,
   ): Promise<StockShortage[]> {
     const short: StockShortage[] = [];
-    for (const line of sortedByItem(lines)) {
+    for (const line of sortedByListing(lines)) {
       const updated: unknown[] = await tx.query(
-        `UPDATE listing_items
+        `UPDATE listings
             SET stock_quantity = stock_quantity - $2::numeric
           WHERE id = $1
-            AND is_active
             AND (stock_quantity IS NULL OR stock_quantity >= $2::numeric)
           RETURNING id`,
-        [line.itemId, line.quantity],
+        [line.listingId, line.quantity],
       );
       // node-postgres returns [rows, rowCount] for UPDATE ... RETURNING.
       const rows = Array.isArray(updated[0]) ? updated[0] : updated;
       if (rows.length === 0) {
         const current: Array<{ stock_quantity: string | null }> =
-          await tx.query(
-            `SELECT stock_quantity FROM listing_items WHERE id = $1`,
-            [line.itemId],
-          );
+          await tx.query(`SELECT stock_quantity FROM listings WHERE id = $1`, [
+            line.listingId,
+          ]);
         short.push({
-          itemId: line.itemId,
+          listingId: line.listingId,
           available: current[0]?.stock_quantity ?? '0',
         });
       }
@@ -378,44 +293,44 @@ export class ListingsRepository {
     return short;
   }
 
-  /** Puts quantities back, for a cancelled order. Unlimited items stay NULL. */
+  /** Puts quantities back, for a cancelled order. Pre-orders stay NULL. */
   async releaseStock(tx: Tx, lines: ReadonlyArray<StockLine>): Promise<void> {
-    for (const line of sortedByItem(lines)) {
+    for (const line of sortedByListing(lines)) {
       await tx.query(
-        `UPDATE listing_items
+        `UPDATE listings
             SET stock_quantity = stock_quantity + $2::numeric
           WHERE id = $1`,
-        [line.itemId, line.quantity],
+        [line.listingId, line.quantity],
       );
     }
   }
 }
 
 export interface StockLine {
-  itemId: string;
+  listingId: string;
   /** Decimal string with up to 3 fraction digits. */
   quantity: string;
 }
 
 export interface StockShortage {
-  itemId: string;
+  listingId: string;
   /** What is left, as a decimal string. */
   available: string;
 }
 
 async function insertCombos(
   manager: EntityManager,
-  listingItemId: string,
-  combos: ListingItemFields['combos'],
+  listingId: string,
+  combos: ComboFields[],
 ): Promise<void> {
   if (combos.length > 0) {
     await manager.insert(
-      ListingItemCombo,
-      combos.map((combo) => ({ ...combo, listingItemId })),
+      ListingCombo,
+      combos.map((combo) => ({ ...combo, listingId })),
     );
   }
 }
 
-function sortedByItem(lines: ReadonlyArray<StockLine>): StockLine[] {
-  return [...lines].sort((a, b) => a.itemId.localeCompare(b.itemId));
+function sortedByListing(lines: ReadonlyArray<StockLine>): StockLine[] {
+  return [...lines].sort((a, b) => a.listingId.localeCompare(b.listingId));
 }
