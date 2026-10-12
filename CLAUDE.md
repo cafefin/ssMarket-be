@@ -192,8 +192,10 @@ Pass structured data the frontend needs
   apostrophe. Keep that when adding columns.
 - `POST /listings/:id/orders/bulk` runs each order through the normal
   single-order method and reports per order; one failure never stops the rest.
-- `PATCH /orders/:id` lets a buyer change the quantity of a pre-order while
-  it is unpaid, pending and its listing is open. It keeps its snapshot price.
+- `PATCH /orders/:id` lets a buyer replace the lines of a pre-order (up to 50,
+  products of its round) while it is unpaid, pending and its round is open.
+  Existing lines keep their snapshot price; a stopped product can be kept or
+  lowered, never added or raised.
 - `POST /listings/:id/reopen` copies a finished pre-order round into a new
   draft (price, combos, and image files as separate copies) with
   `reopened_from_id` set. It never changes the source listing or its orders.

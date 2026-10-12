@@ -131,6 +131,8 @@ export interface Choice {
   paymentMethod?: string;
   deliveryLocation?: string;
   note?: string | null;
+  /** Order keys to send a choice for; by default the first purchase's key only. */
+  keys?: string[];
   [extra: string]: unknown;
 }
 
@@ -145,7 +147,7 @@ export function checkout(
   choice: Choice = {},
   key: string = randomUUID(),
 ) {
-  const { paymentMethod, deliveryLocation, note, ...extra } = choice;
+  const { paymentMethod, deliveryLocation, note, keys, ...extra } = choice;
   return agent
     .post('/checkout')
     .set('Idempotency-Key', key)
@@ -154,14 +156,12 @@ export function checkout(
         listingId: listing.id,
         quantity,
       })),
-      orders: [
-        {
-          key: orderKey(purchases[0].listing),
-          paymentMethod: paymentMethod ?? 'pay_on_delivery',
-          deliveryLocation: deliveryLocation ?? 'Tầng 7',
-          ...(note === undefined ? {} : { note }),
-        },
-      ],
+      orders: (keys ?? [orderKey(purchases[0].listing)]).map((key) => ({
+        key,
+        paymentMethod: paymentMethod ?? 'pay_on_delivery',
+        deliveryLocation: deliveryLocation ?? 'Tầng 7',
+        ...(note === undefined ? {} : { note }),
+      })),
       fromCart: false,
       ...extra,
     });

@@ -22,7 +22,7 @@ export enum OrderActor {
 }
 
 export const ORDER_LIMITS = {
-  linesMax: 20,
+  linesMax: 50,
   quantityMax: 9999,
   deliveryLocationMax: 120,
   noteMax: 500,
