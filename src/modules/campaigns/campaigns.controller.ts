@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -25,9 +26,11 @@ import type { AuthUser } from '../auth/auth.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { CampaignsService } from './campaigns.service.js';
 import { CampaignInputDto } from './dto/campaign-input.dto.js';
+import { CampaignQueryDto } from './dto/campaign-query.dto.js';
 import {
   CampaignDetailDto,
   CampaignMineDto,
+  CampaignPageDto,
 } from './dto/campaign-response.dto.js';
 
 const WRITE_LIMIT = { default: { limit: 30, ttl: 60_000 } };
@@ -52,6 +55,16 @@ export class CampaignsController {
   ): Promise<CampaignDetailDto> {
     const campaign = await this.campaigns.create(user.id, body.toInput());
     return this.campaigns.getDetail(user.id, campaign.id);
+  }
+
+  // Declared before ':id' so that the routes below are not read as an id.
+  @Get()
+  @ApiOkResponse({
+    type: CampaignPageDto,
+    description: 'Open rounds, closing soonest first',
+  })
+  search(@Query() query: CampaignQueryDto): Promise<CampaignPageDto> {
+    return this.campaigns.search(query);
   }
 
   // Declared before ':id' so that "mine" is not read as an id.
@@ -107,6 +120,21 @@ export class CampaignsController {
   ): Promise<CampaignDetailDto> {
     await this.campaigns.close(user.id, id);
     return this.campaigns.getDetail(user.id, id);
+  }
+
+  @Post(':id/reopen')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle(WRITE_LIMIT)
+  @ApiCreatedResponse({
+    type: CampaignDetailDto,
+    description: 'A new draft copied from a finished round',
+  })
+  async reopen(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<CampaignDetailDto> {
+    const campaign = await this.campaigns.reopen(user.id, id);
+    return this.campaigns.getDetail(user.id, campaign.id);
   }
 
   @Delete(':id')

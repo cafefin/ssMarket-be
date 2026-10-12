@@ -482,6 +482,264 @@ describe('Campaigns API', () => {
     expect(cancelled.body.code).toBe('INVALID_ORDER_STATE');
   });
 
+  describe('browsing open rounds', () => {
+    type Summary = {
+      id: string;
+      title: string;
+      itemCount: number;
+      minPrice: number;
+      thumbnails: string[];
+      seller: { id: string; handle: string };
+    };
+    type Page = { items: Summary[]; nextCursor: string | null };
+    const days = (n: number) =>
+      new Date(Date.now() + n * 86_400_000).toISOString();
+    const page = async (query = ''): Promise<Page> => {
+      const response = await buyer.get(`/campaigns${query}`).expect(200);
+      return response.body as Page;
+    };
+    const titles = (p: Page) => p.items.map((item) => item.title);
+    const publishAt = (title: string, deadlineDays: number, extra = {}) =>
+      publishCampaign(
+        seller,
+        campaignBody({ title, orderDeadline: days(deadlineDays), ...extra }),
+      );
+    const photo = () =>
+      sharp({
+        create: { width: 80, height: 60, channels: 3, background: '#2b62b2' },
+      })
+        .jpeg()
+        .toBuffer();
+
+    it('lists open rounds soonest first, paged by cursor, and leaves out the rest', async () => {
+      await publishAt('Ba ngày', 3);
+      await publishAt('Một ngày', 1);
+      await publishAt('Hai ngày', 2);
+      await createDraft(campaignBody({ title: 'Bản nháp tuần' }));
+      const closed = await publishAt('Đã đóng', 1);
+      await seller.post(`/campaigns/${closed.id}/close`).expect(200);
+      const expired = await publishAt('Quá hạn', 1);
+      await expireDeadline(expired.id);
+      const stopped = await publishAt('Ngừng bán', 1);
+      await dataSource.query(
+        `UPDATE listings SET status = 'closed' WHERE campaign_id = $1`,
+        [stopped.id],
+      );
+
+      const all = await page();
+      expect(titles(all)).toEqual(['Một ngày', 'Hai ngày', 'Ba ngày']);
+      expect(all.nextCursor).toBeNull();
+
+      const first = await page('?limit=2');
+      expect(titles(first)).toEqual(['Một ngày', 'Hai ngày']);
+      expect(first.nextCursor).toEqual(expect.any(String));
+      const second = await page(
+        `?limit=2&cursor=${encodeURIComponent(first.nextCursor as string)}`,
+      );
+      expect(titles(second)).toEqual(['Ba ngày']);
+      expect(second.nextCursor).toBeNull();
+    });
+
+    it('summarises each round: items on sale, lowest price, seller and thumbnails', async () => {
+      const campaign = await publishAt('Có ảnh', 2);
+      await seller
+        .post(`/listings/${campaign.items[1].id}/images`)
+        .attach('file', await photo(), 'photo.jpg')
+        .expect(201);
+
+      const { items } = await page();
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        id: campaign.id,
+        itemCount: 2,
+        minPrice: 15000,
+        seller: { handle: 'seller' },
+      });
+      expect(items[0].thumbnails).toHaveLength(1);
+    });
+
+    it('searches titles of rounds and of their products, ignoring diacritics', async () => {
+      await publishCampaign(seller, campaignBody());
+
+      expect(titles(await page('?q=thit'))).toEqual(['Bánh bao tuần này']);
+      expect(titles(await page('?q=tuan'))).toEqual(['Bánh bao tuần này']);
+      expect((await page('?q=xyz')).items).toEqual([]);
+    });
+
+    it('filters by category slug; an unknown slug gives an empty page', async () => {
+      await publishCampaign(seller, campaignBody());
+      const categories = await buyer.get('/categories').expect(200);
+      const food = (
+        categories.body as Array<{ id: number; slug: string }>
+      ).find((category) => category.id === 2);
+
+      expect(titles(await page(`?category=${food?.slug}`))).toHaveLength(1);
+      expect(await page('?category=khong-co-that')).toEqual({
+        items: [],
+        nextCursor: null,
+      });
+    });
+
+    it('filters by price: some item must fall in the range', async () => {
+      await publishAt('Có món 18k', 1);
+      await publishAt('Toàn món 15k', 2, {
+        items: [itemBody(), itemBody({ title: 'Bánh bao khác' })],
+      });
+
+      expect(titles(await page('?minPrice=16000'))).toEqual(['Có món 18k']);
+      expect(titles(await page('?maxPrice=15000'))).toEqual([
+        'Có món 18k',
+        'Toàn món 15k',
+      ]);
+      await buyer.get('/campaigns?minPrice=20000&maxPrice=10000').expect(400);
+    });
+
+    it('filters by seller', async () => {
+      await publishAt('Của người bán', 1);
+      const other = await signIn(app, identity, 'other');
+      await publishCampaign(
+        other,
+        campaignBody({ title: 'Của người khác', orderDeadline: days(2) }),
+      );
+
+      const mine = await page(
+        `?sellerId=${(await seller.get('/users/me')).body.id}`,
+      );
+      expect(titles(mine)).toEqual(['Của người bán']);
+      await buyer.get('/campaigns?sellerId=not-a-uuid').expect(400);
+    });
+
+    it('rejects a malformed cursor', async () => {
+      await buyer.get('/campaigns?cursor=garbage').expect(400);
+    });
+
+    it('shows a new title right after the seller renames the round', async () => {
+      const campaign = await publishCampaign(seller);
+      expect(titles(await page())).toEqual(['Bánh bao tuần này']);
+
+      await seller
+        .patch(`/campaigns/${campaign.id}`)
+        .send(campaignBody({ title: 'Tên mới', items: sameItems(campaign) }))
+        .expect(200);
+
+      expect(titles(await page())).toEqual(['Tên mới']);
+      const detail = await buyer.get(`/campaigns/${campaign.id}`).expect(200);
+      expect(detail.body.title).toBe('Tên mới');
+    });
+
+    it('hides a draft round from others while the seller still reads it', async () => {
+      const draft = await createDraft();
+      await buyer.get(`/campaigns/${draft.id}`).expect(404);
+      await seller.get(`/campaigns/${draft.id}`).expect(200);
+    });
+  });
+
+  describe('reopening a finished round', () => {
+    const photo = () =>
+      sharp({
+        create: { width: 80, height: 60, channels: 3, background: '#2b62b2' },
+      })
+        .jpeg()
+        .toBuffer();
+    const businessDay = (iso: string) =>
+      new Date(Date.parse(iso) + 7 * 3_600_000).toISOString().slice(0, 10);
+    const dayGap = (deadline: string, delivery: string) =>
+      (Date.parse(`${delivery}T00:00:00Z`) -
+        Date.parse(`${businessDay(deadline)}T00:00:00Z`)) /
+      86_400_000;
+
+    it('refuses a draft and an open round', async () => {
+      const draft = await createDraft();
+      const refused = await seller
+        .post(`/campaigns/${draft.id}/reopen`)
+        .expect(409);
+      expect(refused.body.code).toBe('INVALID_LISTING_STATE');
+
+      const open = await publishCampaign(seller);
+      const again = await seller
+        .post(`/campaigns/${open.id}/reopen`)
+        .expect(409);
+      expect(again.body.code).toBe('INVALID_LISTING_STATE');
+    });
+
+    it('is 404 for a missing round and 403 for someone else’s', async () => {
+      const campaign = await publishCampaign(seller);
+      await seller.post(`/campaigns/${campaign.id}/close`).expect(200);
+      await buyer.post(`/campaigns/${campaign.id}/reopen`).expect(403);
+      await seller
+        .post('/campaigns/6f9619ff-8b86-4011-b42d-00c04fc964ff/reopen')
+        .expect(404);
+    });
+
+    it('copies the products on sale, with combos and photos, into a new draft', async () => {
+      const campaign = await publishCampaign(
+        seller,
+        campaignBody({
+          items: [
+            itemBody({
+              combos: [{ quantity: '10', price: 140000 }],
+            }),
+            itemBody({ title: 'Bánh bao ngừng bán', selling: false }),
+            itemBody({ title: 'Bánh bao nhân thịt', unitPrice: 18000 }),
+          ],
+        }),
+      );
+      await seller
+        .post(`/listings/${campaign.items[0].id}/images`)
+        .attach('file', await photo(), 'photo.jpg')
+        .expect(201);
+      await checkout(buyer, [{ listing: itemOf(campaign, 0), quantity: '2' }], {
+        paymentMethod: 'pay_on_delivery',
+        deliveryLocation: 'Tầng 3',
+      }).expect(201);
+      await seller.post(`/campaigns/${campaign.id}/close`).expect(200);
+      await expireDeadline(campaign.id);
+      const before = (await seller.get(`/campaigns/${campaign.id}`)).body;
+
+      const reopened = await seller
+        .post(`/campaigns/${campaign.id}/reopen`)
+        .expect(201);
+
+      const body = reopened.body;
+      expect(body).toMatchObject({
+        status: 'draft',
+        reopenedFromId: campaign.id,
+        title: before.title,
+        isOpen: false,
+      });
+      expect(body.id).not.toBe(campaign.id);
+      expect(body.items.map((item: { title: string }) => item.title)).toEqual([
+        'Bánh bao chay',
+        'Bánh bao nhân thịt',
+      ]);
+      expect(body.items[0].combos).toEqual(before.items[0].combos);
+      expect(body.items[0].combos).toHaveLength(1);
+      expect(body.items[0].orderCount).toBe(0);
+      expect(body.items[0].images).toHaveLength(1);
+      expect(body.items[0].images[0].id).not.toBe(before.items[0].images[0].id);
+      expect(body.items[0].images[0].url).not.toBe(
+        before.items[0].images[0].url,
+      );
+      expect(body.items[0].id).not.toBe(before.items[0].id);
+
+      const weeks =
+        (Date.parse(body.orderDeadline) - Date.parse(before.orderDeadline)) /
+        (7 * 86_400_000);
+      expect(Number.isInteger(weeks)).toBe(true);
+      expect(weeks).toBeGreaterThan(0);
+      expect(Date.parse(body.orderDeadline)).toBeGreaterThan(Date.now());
+      expect(dayGap(body.orderDeadline, body.deliveryDate)).toBe(
+        dayGap(before.orderDeadline, before.deliveryDate),
+      );
+
+      const after = (await seller.get(`/campaigns/${campaign.id}`)).body;
+      expect(after).toEqual(before);
+      expect(after.items[0].orderCount).toBe(1);
+      expect(after.status).toBe('closed');
+    });
+  });
+
   describe('concurrent writes to one round', () => {
     it('publishes a draft once when two requests race', async () => {
       const draft = await createDraft();

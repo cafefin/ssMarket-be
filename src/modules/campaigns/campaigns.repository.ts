@@ -6,6 +6,7 @@ import { Listing } from '../listings/listing.entity.js';
 import { ListingMode, ListingStatus } from '../listings/listings.constants.js';
 import type { ComboFields } from '../listings/listings.repository.js';
 import { buildSearchText } from '../listings/search-text.js';
+import type { CampaignCursor } from './campaign-cursor.js';
 import { Campaign, CampaignStatus } from './campaign.entity.js';
 
 // The products of a round are rows of `listings`. This repository is the
@@ -59,6 +60,38 @@ export interface CampaignMineRow {
   item_count: number;
   /** Orders that are not cancelled. */
   order_count: number;
+}
+
+/** One row of the public list of open rounds. */
+export interface CampaignOpenRow {
+  id: string;
+  title: string;
+  order_deadline: Date;
+  delivery_date: string;
+  category_id: number;
+  category_slug: string;
+  category_name: string;
+  category_name_en: string;
+  category_is_perishable: boolean;
+  seller_id: string;
+  seller_name: string;
+  seller_email: string;
+  seller_avatar_url: string | null;
+  item_count: number;
+  min_price: number;
+  /** Storage keys of the first photo of up to 4 products on sale. */
+  image_keys: string[];
+}
+
+export interface OpenCampaignSearch {
+  tsQuery: string | null;
+  categoryId: number | null;
+  sellerId: string | null;
+  minPrice: number | null;
+  maxPrice: number | null;
+  cursor: CampaignCursor | null;
+  limit: number;
+  now: Date;
 }
 
 /** Thrown when items to delete are referenced by order lines. */
@@ -118,6 +151,83 @@ export class CampaignsRepository {
        ORDER BY c.created_at DESC, c.id DESC
       `,
       [sellerId],
+    );
+  }
+
+  /** Open rounds with something on sale, soonest deadline first. */
+  searchOpen(search: OpenCampaignSearch): Promise<CampaignOpenRow[]> {
+    const params: unknown[] = [search.now];
+    const bind = (value: unknown): string => `$${params.push(value)}`;
+    const onSale = `l.campaign_id = cp.id AND l.status = 'open'`;
+
+    const where = [
+      `cp.status = 'open'`,
+      'cp.order_deadline > $1',
+      'stats.item_count > 0',
+    ];
+    if (search.categoryId !== null) {
+      where.push(`cp.category_id = ${bind(search.categoryId)}`);
+    }
+    if (search.sellerId !== null) {
+      where.push(`cp.seller_id = ${bind(search.sellerId)}::uuid`);
+    }
+    if (search.minPrice !== null || search.maxPrice !== null) {
+      const bounds = [
+        ...(search.minPrice !== null
+          ? [`l.unit_price >= ${bind(search.minPrice)}`]
+          : []),
+        ...(search.maxPrice !== null
+          ? [`l.unit_price <= ${bind(search.maxPrice)}`]
+          : []),
+      ];
+      where.push(
+        `EXISTS (SELECT 1 FROM listings l WHERE ${onSale} AND ${bounds.join(' AND ')})`,
+      );
+    }
+    if (search.tsQuery !== null) {
+      const tsQuery = `to_tsquery('simple', ${bind(search.tsQuery)})`;
+      where.push(
+        `(cp.search_vector @@ ${tsQuery}
+          OR EXISTS (SELECT 1 FROM listings l WHERE ${onSale} AND l.search_vector @@ ${tsQuery}))`,
+      );
+    }
+    if (search.cursor) {
+      where.push(
+        `(cp.order_deadline, cp.id) > (${bind(search.cursor.orderDeadline)}::timestamptz, ${bind(search.cursor.id)}::uuid)`,
+      );
+    }
+
+    return this.repository.query(
+      `
+      SELECT cp.id, cp.title, cp.order_deadline,
+             to_char(cp.delivery_date, 'YYYY-MM-DD') AS delivery_date,
+             c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
+             c.name_en AS category_name_en, c.is_perishable AS category_is_perishable,
+             u.id AS seller_id, u.name AS seller_name, u.email AS seller_email,
+             u.avatar_url AS seller_avatar_url,
+             stats.item_count, stats.min_price,
+             ARRAY(
+               SELECT img.storage_key
+                 FROM listings l2
+                 JOIN LATERAL (
+                   SELECT storage_key FROM listing_images
+                    WHERE listing_id = l2.id ORDER BY sort_order LIMIT 1
+                 ) img ON true
+                WHERE l2.campaign_id = cp.id AND l2.status = 'open'
+                ORDER BY l2.sort_order LIMIT 4
+             ) AS image_keys
+        FROM campaigns cp
+        JOIN categories c ON c.id = cp.category_id
+        JOIN users u ON u.id = cp.seller_id
+        JOIN LATERAL (
+          SELECT COUNT(*)::int AS item_count, MIN(unit_price)::int AS min_price
+            FROM listings l WHERE ${onSale}
+        ) stats ON true
+       WHERE ${where.join(' AND ')}
+       ORDER BY cp.order_deadline, cp.id
+       LIMIT ${bind(search.limit)}
+      `,
+      params,
     );
   }
 

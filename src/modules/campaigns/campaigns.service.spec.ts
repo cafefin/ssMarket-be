@@ -6,6 +6,7 @@ import {
 import type { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import type { CategoriesService } from '../categories/categories.service.js';
+import type { ListingImagesService } from '../listings/listing-images.service.js';
 import { Listing } from '../listings/listing.entity.js';
 import { ListingStatus } from '../listings/listings.constants.js';
 import type { UsersService } from '../users/users.service.js';
@@ -15,8 +16,14 @@ import {
   CampaignItemsInUseError,
   CampaignStateChangedError,
   type CampaignsRepository,
+  type ItemWrite,
 } from './campaigns.repository.js';
 import { CampaignsService } from './campaigns.service.js';
+import { CampaignDetailDto } from './dto/campaign-response.dto.js';
+import {
+  decodeCampaignCursor,
+  encodeCampaignCursor,
+} from './campaign-cursor.js';
 
 const SELLER = 'seller-1';
 const OTHER = 'other-1';
@@ -107,10 +114,16 @@ describe('CampaignsService', () => {
     setStatus: vi.fn(),
     delete: vi.fn(),
     itemUsage: vi.fn(),
+    searchOpen: vi.fn(),
   };
   const users = { getById: vi.fn(), hasBankProfile: vi.fn() };
-  const categories = { findById: vi.fn() };
-  const cache = { bumpVersion: vi.fn() };
+  const categories = { findById: vi.fn(), findBySlug: vi.fn() };
+  const cache = {
+    bumpVersion: vi.fn(),
+    getVersion: vi.fn(),
+    getOrSet: vi.fn(),
+  };
+  const images = { copyAll: vi.fn() };
   let service: CampaignsService;
 
   beforeEach(() => {
@@ -122,11 +135,17 @@ describe('CampaignsService', () => {
     users.getById.mockResolvedValue({ id: SELLER });
     users.hasBankProfile.mockReturnValue(true);
     categories.findById.mockResolvedValue({ id: 2, isActive: true });
+    cache.getVersion.mockResolvedValue(3);
+    cache.getOrSet.mockImplementation(
+      (_key: string, _ttl: number, loader: () => Promise<unknown>) => loader(),
+    );
+    repository.searchOpen.mockResolvedValue([]);
     service = new CampaignsService(
       repository as unknown as CampaignsRepository,
       users as unknown as UsersService,
       categories as unknown as CategoriesService,
       cache as unknown as CacheService,
+      images as unknown as ListingImagesService,
     );
   });
 
@@ -803,6 +822,322 @@ describe('CampaignsService', () => {
       expect(detail.thumbnails[0]).toContain('listings/i1/a');
       expect(detail.thumbnails[3]).toContain('listings/i5/a');
       expect(detail.items[0].images).toHaveLength(2);
+    });
+  });
+
+  describe('search', () => {
+    const row = (id: string, deadline: string) => ({
+      id,
+      title: `Round ${id}`,
+      order_deadline: new Date(deadline),
+      delivery_date: '2026-10-20',
+      category_id: 2,
+      category_slug: 'do-an',
+      category_name: 'Đồ ăn',
+      category_name_en: 'Food',
+      category_is_perishable: true,
+      seller_id: SELLER,
+      seller_name: 'Seller',
+      seller_email: 'an.nguyen@example.com',
+      seller_avatar_url: null,
+      item_count: 2,
+      min_price: 15_000,
+      image_keys: ['listings/a/x.webp'],
+    });
+    const IDS = {
+      a: '11111111-1111-4111-8111-111111111111',
+      b: '22222222-2222-4222-8222-222222222222',
+      c: '33333333-3333-4333-8333-333333333333',
+    };
+    const lastCall = () => repository.searchOpen.mock.calls.at(-1)?.[0];
+
+    it('clamps the limit to 1..50, asks for one row more and defaults to 20', async () => {
+      await service.search({});
+      expect(lastCall()).toMatchObject({ limit: 21, now: NOW });
+      await service.search({ limit: 500 });
+      expect(lastCall().limit).toBe(51);
+      await service.search({ limit: 0 });
+      expect(lastCall().limit).toBe(2);
+    });
+
+    it('shapes the rows and gives a cursor only when there is one more', async () => {
+      repository.searchOpen.mockResolvedValue([
+        row(IDS.a, '2026-10-13T10:00:00Z'),
+        row(IDS.b, '2026-10-14T10:00:00Z'),
+        row(IDS.c, '2026-10-15T10:00:00Z'),
+      ]);
+
+      const page = await service.search({ limit: 2 });
+
+      expect(page.items.map((item) => item.id)).toEqual([IDS.a, IDS.b]);
+      expect(page.items[0]).toMatchObject({
+        title: `Round ${IDS.a}`,
+        orderDeadline: '2026-10-13T10:00:00.000Z',
+        deliveryDate: '2026-10-20',
+        itemCount: 2,
+        minPrice: 15_000,
+        seller: { id: SELLER, handle: 'an.nguyen', avatarUrl: null },
+        category: { id: 2, slug: 'do-an', nameEn: 'Food' },
+      });
+      expect(page.items[0].thumbnails).toHaveLength(1);
+      expect(page.items[0].thumbnails[0]).toContain('listings/a/x');
+      expect(decodeCampaignCursor(page.nextCursor as string)).toEqual({
+        orderDeadline: '2026-10-14T10:00:00.000Z',
+        id: IDS.b,
+      });
+
+      repository.searchOpen.mockResolvedValue([
+        row(IDS.a, '2026-10-13T10:00:00Z'),
+      ]);
+      await expect(service.search({ limit: 2 })).resolves.toMatchObject({
+        nextCursor: null,
+      });
+    });
+
+    it('answers an empty page for an unknown category without a query', async () => {
+      categories.findBySlug.mockResolvedValue(null);
+
+      await expect(service.search({ category: 'nope' })).resolves.toEqual({
+        items: [],
+        nextCursor: null,
+      });
+      expect(repository.searchOpen).not.toHaveBeenCalled();
+    });
+
+    it('turns the filters into query arguments', async () => {
+      categories.findBySlug.mockResolvedValue({ id: 2 });
+
+      await service.search({
+        q: 'Thịt bao',
+        category: 'do-an',
+        minPrice: 1_000,
+        maxPrice: 20_000,
+        sellerId: SELLER,
+      });
+
+      expect(lastCall()).toMatchObject({
+        tsQuery: 'thit & bao:*',
+        categoryId: 2,
+        minPrice: 1_000,
+        maxPrice: 20_000,
+        sellerId: SELLER,
+        cursor: null,
+      });
+    });
+
+    it('rejects a lowest price above the highest', async () => {
+      await expect(
+        service.search({ minPrice: 20_000, maxPrice: 10_000 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a malformed cursor and passes a good one on', async () => {
+      await expect(
+        service.search({ cursor: 'garbage' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      const cursor = {
+        orderDeadline: '2026-10-14T10:00:00.000Z',
+        id: '6f9619ff-8b86-4011-b42d-00c04fc964ff',
+      };
+
+      await service.search({ cursor: encodeCampaignCursor(cursor) });
+
+      expect(lastCall().cursor).toEqual(cursor);
+    });
+
+    it('caches by version and by every parameter', async () => {
+      await service.search({});
+      await service.search({ q: 'bao' });
+      await service.search({ limit: 5 });
+      await service.search({ minPrice: 1 });
+      cache.getVersion.mockResolvedValue(4);
+      await service.search({});
+
+      const keys = cache.getOrSet.mock.calls.map((call) => call[0] as string);
+      expect(new Set(keys).size).toBe(5);
+      expect(keys[0]).toMatch(/^listings:v3:campaigns:[0-9a-f]{64}$/);
+      expect(keys[4]).toMatch(/^listings:v4:campaigns:/);
+      expect(cache.getOrSet.mock.calls[0][1]).toBe(60);
+    });
+  });
+
+  describe('getDetail through the cache', () => {
+    const open = () =>
+      stored({
+        status: CampaignStatus.Open,
+        items: [storedItem({ status: ListingStatus.Open })],
+      });
+
+    it('reads others’ view through the cache and recomputes isOpen', async () => {
+      const cachedDto = CampaignDetailDto.from(open(), NOW);
+      cachedDto.orderDeadline = '2026-10-12T02:00:00.000Z';
+      cachedDto.isOpen = true;
+      cache.getOrSet.mockResolvedValue(cachedDto);
+
+      const detail = await service.getDetail(OTHER, 'campaign-1');
+
+      expect(cache.getOrSet.mock.calls[0][0]).toBe(
+        'listings:v3:campaign:campaign-1',
+      );
+      expect(detail.isOpen).toBe(false);
+      expect(repository.findById).not.toHaveBeenCalled();
+    });
+
+    it('gives the seller the database view even when a cached copy exists', async () => {
+      cache.getOrSet.mockResolvedValue(CampaignDetailDto.from(open(), NOW));
+      repository.findById.mockResolvedValue(open());
+
+      await service.getDetail(SELLER, 'campaign-1');
+
+      expect(repository.itemUsage).toHaveBeenCalledWith('campaign-1');
+    });
+
+    it('never caches a draft or a missing round', async () => {
+      cache.getOrSet.mockImplementation(
+        async (_k: string, _t: number, loader: () => Promise<unknown>) =>
+          loader(),
+      );
+      repository.findById.mockResolvedValue(stored());
+
+      await expect(
+        service.getDetail(OTHER, 'campaign-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('reopen', () => {
+    const finished = () =>
+      stored({
+        status: CampaignStatus.Closed,
+        title: 'Bánh bao',
+        description: 'Giao tận tầng',
+        searchText: 'banh bao',
+        acceptsPrepaidQr: true,
+        orderDeadline: new Date('2026-10-05T10:00:00Z'),
+        deliveryDate: '2026-10-07',
+        items: [
+          storedItem({
+            id: 'old-1',
+            title: 'Bánh chay',
+            sortOrder: 0,
+            status: ListingStatus.Open,
+            combos: [{ quantity: '10', price: 140_000 }] as Listing['combos'],
+            images: [{ id: 'img-1' }] as Listing['images'],
+          }),
+          storedItem({
+            id: 'old-2',
+            sortOrder: 1,
+            status: ListingStatus.Closed,
+          }),
+          storedItem({
+            id: 'old-3',
+            title: 'Bánh thịt',
+            sortOrder: 2,
+            status: ListingStatus.Open,
+            unitPrice: 18_000,
+            images: [{ id: 'img-3' }] as Listing['images'],
+          }),
+        ],
+      });
+
+    it('refuses a draft and a round still taking orders', async () => {
+      repository.findById.mockResolvedValue(stored());
+      expect(
+        (await rejection(service.reopen(SELLER, 'campaign-1'))).getStatus(),
+      ).toBe(409);
+
+      repository.findById.mockResolvedValue(
+        stored({ status: CampaignStatus.Open }),
+      );
+      expect(
+        (await rejection(service.reopen(SELLER, 'campaign-1'))).getStatus(),
+      ).toBe(409);
+      expect(repository.insert).not.toHaveBeenCalled();
+    });
+
+    it('is 403 for someone else’s round', async () => {
+      repository.findById.mockResolvedValue(finished());
+
+      await expect(service.reopen(OTHER, 'campaign-1')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it('inserts a draft with the shared terms, moved dates and the products on sale', async () => {
+      repository.findById
+        .mockResolvedValueOnce(finished())
+        .mockResolvedValueOnce(
+          stored({
+            id: 'new-1',
+            items: [
+              storedItem({ id: 'new-a', sortOrder: 0 }),
+              storedItem({ id: 'new-b', sortOrder: 1 }),
+            ],
+          }),
+        );
+
+      const result = await service.reopen(SELLER, 'campaign-1');
+
+      expect(result.id).toBe('new-1');
+      const [fields, items] = repository.insert.mock.calls[0];
+      expect(fields).toMatchObject({
+        sellerId: SELLER,
+        categoryId: 2,
+        title: 'Bánh bao',
+        description: 'Giao tận tầng',
+        acceptsPrepaidQr: true,
+        acceptsPayOnDelivery: true,
+        searchText: 'banh bao',
+        status: CampaignStatus.Draft,
+        publishedAt: null,
+        closedAt: null,
+        reopenedFromId: 'campaign-1',
+        // 05 Oct + 1 week, 17:00 in Vietnam; delivery two days later
+        orderDeadline: new Date('2026-10-12T10:00:00Z'),
+        deliveryDate: '2026-10-14',
+      });
+      expect(
+        items.map((item: ItemWrite) => [
+          item.id,
+          item.title,
+          item.unitPrice,
+          item.status,
+          item.sortOrder,
+          item.publishedAt,
+        ]),
+      ).toEqual([
+        [null, 'Bánh chay', 15_000, ListingStatus.Draft, 0, null],
+        [null, 'Bánh thịt', 18_000, ListingStatus.Draft, 1, null],
+      ]);
+      expect(items[0].combos).toEqual([{ quantity: '10', price: 140_000 }]);
+      expect(cache.bumpVersion).toHaveBeenCalledWith('listings');
+    });
+
+    it('copies the photos of each product into its new twin', async () => {
+      const source = finished();
+      repository.findById.mockResolvedValueOnce(source).mockResolvedValueOnce(
+        stored({
+          id: 'new-1',
+          items: [
+            storedItem({ id: 'new-a', sortOrder: 0 }),
+            storedItem({ id: 'new-b', sortOrder: 1 }),
+          ],
+        }),
+      );
+
+      await service.reopen(SELLER, 'campaign-1');
+
+      expect(images.copyAll).toHaveBeenCalledTimes(2);
+      expect(images.copyAll).toHaveBeenNthCalledWith(
+        1,
+        source.items[0].images,
+        'new-a',
+      );
+      expect(images.copyAll).toHaveBeenNthCalledWith(
+        2,
+        source.items[2].images,
+        'new-b',
+      );
     });
   });
 

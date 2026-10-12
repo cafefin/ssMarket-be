@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   BadRequestException,
   ForbiddenException,
@@ -8,12 +9,24 @@ import { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { normalizeForSearch } from '../../common/text/normalize.js';
 import { CategoriesService } from '../categories/categories.service.js';
-import { isCampaignOpen } from '../listings/listing-rules.js';
+import { emailHandle } from '../listings/dto/listing-response.dto.js';
+import { ListingImagesService } from '../listings/listing-images.service.js';
+import {
+  isCampaignOpen,
+  suggestReopenDates,
+} from '../listings/listing-rules.js';
 import {
   LISTINGS_CACHE_NAMESPACE,
+  LISTINGS_CACHE_TTL_SECONDS,
   ListingStatus,
 } from '../listings/listings.constants.js';
+import { mediaUrl, thumbnailKey } from '../listings/media-url.js';
+import { toTsQuery } from '../listings/search-query.js';
 import { UsersService } from '../users/users.service.js';
+import {
+  decodeCampaignCursor,
+  encodeCampaignCursor,
+} from './campaign-cursor.js';
 import {
   type CampaignInput,
   type CampaignItemInput,
@@ -22,6 +35,7 @@ import {
 import { type Campaign, CampaignStatus } from './campaign.entity.js';
 import {
   CampaignItemsInUseError,
+  type CampaignOpenRow,
   CampaignsRepository,
   CampaignStateChangedError,
   type ItemWrite,
@@ -29,7 +43,24 @@ import {
 import {
   CampaignDetailDto,
   type CampaignMineDto,
+  type CampaignPageDto,
+  type CampaignSummaryDto,
 } from './dto/campaign-response.dto.js';
+
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 50;
+
+export interface CampaignSearchParams {
+  q?: string;
+  /** Category slug. */
+  category?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  sellerId?: string;
+  cursor?: string;
+  /** Default 20, 1..50. */
+  limit?: number;
+}
 
 @Injectable()
 export class CampaignsService {
@@ -38,6 +69,7 @@ export class CampaignsService {
     private readonly users: UsersService,
     private readonly categories: CategoriesService,
     private readonly cache: CacheService,
+    private readonly images: ListingImagesService,
   ) {}
 
   /** Creates a draft round with its products. */
@@ -177,24 +209,184 @@ export class CampaignsService {
 
   /**
    * The seller sees the round in any state, every product and its order
-   * numbers. Everyone else sees a published round with the products on
-   * sale; a draft does not exist as far as they can tell.
+   * numbers, always from the database. Everyone else sees a published round
+   * with the products on sale, from the cache; a draft does not exist as far
+   * as they can tell.
    */
   async getDetail(viewerId: string, id: string): Promise<CampaignDetailDto> {
-    const campaign = await this.campaigns.findById(id);
-    const owner = campaign?.sellerId === viewerId;
-    if (!campaign || (!owner && campaign.status === CampaignStatus.Draft)) {
-      throw new NotFoundException('Round not found');
+    const version = await this.cache.getVersion(LISTINGS_CACHE_NAMESPACE);
+    let cached: CampaignDetailDto | null = null;
+    try {
+      cached = await this.cache.getOrSet(
+        `${LISTINGS_CACHE_NAMESPACE}:v${version}:campaign:${id}`,
+        LISTINGS_CACHE_TTL_SECONDS,
+        async () => {
+          const campaign = await this.campaigns.findById(id);
+          if (!campaign || campaign.status === CampaignStatus.Draft) {
+            // Thrown so that a draft is never written to the cache.
+            throw new NotFoundException('Round not found');
+          }
+          return CampaignDetailDto.from(campaign, new Date());
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        throw error;
+      }
     }
+
     const now = new Date();
-    if (!owner) {
-      return CampaignDetailDto.from(campaign, now);
+    if (cached && cached.seller.id !== viewerId) {
+      // The deadline may have passed since the copy was stored.
+      return Object.assign(new CampaignDetailDto(), cached, {
+        isOpen: isCampaignOpen(
+          {
+            status: cached.status,
+            orderDeadline: new Date(cached.orderDeadline),
+          },
+          now,
+        ),
+      });
+    }
+
+    const campaign = await this.campaigns.findById(id);
+    if (!campaign || campaign.sellerId !== viewerId) {
+      throw new NotFoundException('Round not found');
     }
     return CampaignDetailDto.from(
       campaign,
       now,
       await this.campaigns.itemUsage(id),
     );
+  }
+
+  /** Browse open rounds, soonest deadline first. Cached for a minute. */
+  async search(params: CampaignSearchParams): Promise<CampaignPageDto> {
+    const limit = Math.min(
+      Math.max(params.limit ?? DEFAULT_PAGE_SIZE, 1),
+      MAX_PAGE_SIZE,
+    );
+    const tsQuery = params.q ? toTsQuery(params.q) : null;
+    if (
+      params.minPrice !== undefined &&
+      params.maxPrice !== undefined &&
+      params.minPrice > params.maxPrice
+    ) {
+      throw new BadRequestException('minPrice cannot be above maxPrice');
+    }
+    const cursor = params.cursor ? decodeCampaignCursor(params.cursor) : null;
+
+    let categoryId: number | null = null;
+    if (params.category) {
+      const category = await this.categories.findBySlug(params.category);
+      if (!category) {
+        return { items: [], nextCursor: null };
+      }
+      categoryId = category.id;
+    }
+    const sellerId = params.sellerId ?? null;
+    const minPrice = params.minPrice ?? null;
+    const maxPrice = params.maxPrice ?? null;
+
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify([
+          tsQuery,
+          categoryId,
+          cursor,
+          limit,
+          sellerId,
+          minPrice,
+          maxPrice,
+        ]),
+      )
+      .digest('hex');
+    const version = await this.cache.getVersion(LISTINGS_CACHE_NAMESPACE);
+
+    return this.cache.getOrSet(
+      `${LISTINGS_CACHE_NAMESPACE}:v${version}:campaigns:${fingerprint}`,
+      LISTINGS_CACHE_TTL_SECONDS,
+      async () => {
+        const rows = await this.campaigns.searchOpen({
+          tsQuery,
+          categoryId,
+          sellerId,
+          minPrice,
+          maxPrice,
+          cursor,
+          limit: limit + 1,
+          now: new Date(),
+        });
+        const page = rows.slice(0, limit);
+        const last = page.at(-1);
+        return {
+          items: page.map((row) => this.toSummary(row)),
+          nextCursor:
+            rows.length > limit && last
+              ? encodeCampaignCursor({
+                  orderDeadline: last.order_deadline.toISOString(),
+                  id: last.id,
+                })
+              : null,
+        };
+      },
+    );
+  }
+
+  /**
+   * Copies a finished round into a new draft: the same terms, the products
+   * that were on sale (with combos and photos), and dates moved forward by
+   * whole weeks.
+   */
+  async reopen(sellerId: string, id: string): Promise<Campaign> {
+    const source = await this.findOwned(sellerId, id);
+    const now = new Date();
+    if (source.status === CampaignStatus.Draft || isCampaignOpen(source, now)) {
+      throw this.invalidState('Only a finished round can be reopened');
+    }
+
+    const kept = source.items.filter(
+      (item) => item.status !== ListingStatus.Closed,
+    );
+    const newId = await this.campaigns.insert(
+      {
+        sellerId,
+        categoryId: source.categoryId,
+        title: source.title,
+        description: source.description,
+        acceptsPrepaidQr: source.acceptsPrepaidQr,
+        acceptsPayOnDelivery: source.acceptsPayOnDelivery,
+        searchText: source.searchText,
+        ...suggestReopenDates(source.orderDeadline, source.deliveryDate, now),
+        status: CampaignStatus.Draft,
+        publishedAt: null,
+        closedAt: null,
+        reopenedFromId: source.id,
+      },
+      kept.map((item, index) => ({
+        id: null,
+        title: item.title,
+        description: item.description,
+        unit: item.unit,
+        unitPrice: item.unitPrice,
+        combos: (item.combos ?? []).map((combo) => ({
+          quantity: combo.quantity,
+          price: combo.price,
+        })),
+        status: ListingStatus.Draft,
+        sortOrder: index,
+        publishedAt: null,
+      })),
+    );
+
+    const created = await this.mustFind(newId);
+    const twins = [...created.items].sort((a, b) => a.sortOrder - b.sortOrder);
+    for (const [index, item] of kept.entries()) {
+      await this.images.copyAll(item.images ?? [], twins[index].id);
+    }
+
+    await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
+    return created;
   }
 
   /** The seller's rounds in any state, newest first. */
@@ -229,6 +421,31 @@ export class CampaignsService {
       throw new ForbiddenException('You can only change your own rounds');
     }
     return campaign;
+  }
+
+  private toSummary(row: CampaignOpenRow): CampaignSummaryDto {
+    return {
+      id: row.id,
+      title: row.title,
+      seller: {
+        id: row.seller_id,
+        name: row.seller_name,
+        handle: emailHandle(row.seller_email),
+        avatarUrl: row.seller_avatar_url,
+      },
+      category: {
+        id: row.category_id,
+        slug: row.category_slug,
+        name: row.category_name,
+        nameEn: row.category_name_en,
+        isPerishable: row.category_is_perishable,
+      },
+      orderDeadline: row.order_deadline.toISOString(),
+      deliveryDate: row.delivery_date,
+      itemCount: row.item_count,
+      minPrice: row.min_price,
+      thumbnails: row.image_keys.map((key) => mediaUrl(thumbnailKey(key))),
+    };
   }
 
   private async mustFind(id: string): Promise<Campaign> {
