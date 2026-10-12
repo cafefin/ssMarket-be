@@ -115,6 +115,16 @@ export class CheckoutLineDto {
   quantity!: string;
 }
 
+export class SetCartLinesDto {
+  @ApiProperty({ type: [CheckoutLineDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => CheckoutLineDto)
+  lines!: CheckoutLineDto[];
+}
+
 export class CheckoutPreviewRequestDto {
   @ApiProperty({ type: [CheckoutLineDto] })
   @IsArray()

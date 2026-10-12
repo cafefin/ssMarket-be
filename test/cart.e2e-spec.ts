@@ -9,6 +9,7 @@ import { createTestApp } from './utils/create-test-app.js';
 import {
   campaignBody,
   itemBody,
+  itemOf,
   publishCampaign,
   type TestCampaign,
 } from './utils/market.js';
@@ -209,6 +210,175 @@ describe('Cart and checkout', () => {
       });
       const cart = (await buyer.get('/cart').expect(200)).body;
       expect(cart.groups[0].lines[0].quantity).toBe(1);
+    });
+
+    describe('PUT /cart/lines', () => {
+      const setMany = (lines: Array<{ listingId: string; quantity: string }>) =>
+        buyer.put('/cart/lines').send({ lines });
+      const cartLines = async (): Promise<
+        Array<{
+          listingId: string;
+          quantity: number;
+          campaign: { id: string } | null;
+        }>
+      > =>
+        (
+          (await buyer.get('/cart').expect(200)).body.groups as Array<{
+            lines: Array<{
+              listingId: string;
+              quantity: number;
+              campaign: { id: string } | null;
+            }>;
+          }>
+        ).flatMap((group) => group.lines);
+
+      it('puts several products of a round in the cart, and replaces one sent again', async () => {
+        const round = await publishCampaign(
+          sellerA,
+          campaignBody({
+            items: [
+              itemBody({ title: 'Một' }),
+              itemBody({ title: 'Hai' }),
+              itemBody({ title: 'Ba' }),
+            ],
+          }),
+        );
+        const [one, two, three] = [0, 1, 2].map((i) => itemOf(round, i));
+
+        const first = await setMany([
+          { listingId: one.id, quantity: '1' },
+          { listingId: two.id, quantity: '2' },
+          { listingId: three.id, quantity: '3' },
+        ]).expect(200);
+        expect(first.body.lineCount).toBe(3);
+        expect(await cartLines()).toHaveLength(3);
+        for (const line of await cartLines()) {
+          expect(line.campaign?.id).toBe(round.id);
+        }
+
+        await setMany([{ listingId: two.id, quantity: '5' }]).expect(200);
+
+        const lines = await cartLines();
+        expect(lines).toHaveLength(3);
+        expect(lines.find((line) => line.listingId === two.id)?.quantity).toBe(
+          5,
+        );
+        expect(lines.find((line) => line.listingId === one.id)?.quantity).toBe(
+          1,
+        );
+      });
+
+      it.each([
+        ['a stopped product', 409, 'LISTING_NOT_OPEN'],
+        ['an unknown product', 409, 'LISTING_NOT_OPEN'],
+        ['a zero quantity', 422, 'INVALID_QUANTITY'],
+        ['the buyer own product', 422, 'OWN_LISTING'],
+        ['more than the stock', 409, 'OUT_OF_STOCK'],
+      ])(
+        'refuses the whole request for %s and leaves the cart alone',
+        async (name, status, code) => {
+          const round = await publishCampaign(sellerA, campaignBody());
+          const good = itemOf(round, 0);
+          await add(good.id, '1').expect(200);
+          let bad = { listingId: itemOf(round, 1).id, quantity: '1' };
+          if (name === 'a stopped product') {
+            await dataSource.query(
+              'UPDATE listings SET status = $2 WHERE id = $1',
+              [bad.listingId, 'closed'],
+            );
+          } else if (name === 'an unknown product') {
+            bad = { listingId: randomUUID(), quantity: '1' };
+          } else if (name === 'a zero quantity') {
+            bad.quantity = '0';
+          } else if (name === 'the buyer own product') {
+            const mine = await gadget(buyer, 'Đồ của tôi', {
+              unitPrice: 10000,
+              stockQuantity: '1',
+            });
+            bad = { listingId: mine.id, quantity: '1' };
+          } else {
+            const last = await gadget(sellerB, 'Loa cuối', {
+              unitPrice: 10000,
+              stockQuantity: '1',
+            });
+            bad = { listingId: last.id, quantity: '2' };
+          }
+
+          const single = await add(bad.listingId, bad.quantity).expect(status);
+          const refused = await setMany([
+            { listingId: good.id, quantity: '4' },
+            bad,
+          ]).expect(status);
+
+          expect(refused.body.code).toBe(code);
+          expect(refused.body.code).toBe(single.body.code);
+          const lines = await cartLines();
+          expect(lines).toHaveLength(1);
+          expect(lines[0]).toMatchObject({ listingId: good.id, quantity: 1 });
+        },
+      );
+
+      it('refuses a product that appears twice', async () => {
+        const round = await publishCampaign(sellerA, campaignBody());
+        const id = itemOf(round, 0).id;
+
+        await setMany([
+          { listingId: id, quantity: '1' },
+          { listingId: id, quantity: '2' },
+        ]).expect(400);
+
+        expect(await cartLines()).toHaveLength(0);
+      });
+
+      it('refuses more than 50 different products, but replaces lines in a full cart', async () => {
+        const round = await publishCampaign(
+          sellerA,
+          campaignBody({
+            items: Array.from({ length: 3 }, (_, i) =>
+              itemBody({ title: `Món ${i}` }),
+            ),
+          }),
+        );
+        const ids = [0, 1, 2].map((i) => itemOf(round, i).id);
+        // 48 filler lines, then two real ones: the cart is at 50.
+        const filler: Listing[] = [];
+        for (let i = 0; i < 48; i++) {
+          filler.push(
+            await gadget(sellerB, `Đồ dùng số ${i}`, {
+              unitPrice: 10000,
+              stockQuantity: '5',
+            }),
+          );
+        }
+        for (const item of filler) {
+          await add(item.id, '1').expect(200);
+        }
+        await setMany([
+          { listingId: ids[0], quantity: '1' },
+          { listingId: ids[1], quantity: '1' },
+        ]).expect(200);
+
+        const full = await setMany([
+          { listingId: ids[0], quantity: '2' },
+          { listingId: ids[2], quantity: '1' },
+        ]).expect(409);
+        expect(full.body.code).toBe('CART_FULL');
+        const lines = await cartLines();
+        expect(lines).toHaveLength(50);
+        expect(lines.find((line) => line.listingId === ids[0])?.quantity).toBe(
+          1,
+        );
+
+        await setMany([
+          { listingId: ids[0], quantity: '2' },
+          { listingId: ids[1], quantity: '3' },
+        ]).expect(200);
+        const after = await cartLines();
+        expect(after).toHaveLength(50);
+        expect(after.find((line) => line.listingId === ids[1])?.quantity).toBe(
+          3,
+        );
+      });
     });
 
     it('flags a line whose listing closed or ran short after it was added', async () => {

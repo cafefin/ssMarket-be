@@ -41,6 +41,20 @@ export class CartRepository {
     );
   }
 
+  /** Adds or replaces every line in one transaction. */
+  async upsertMany(
+    userId: string,
+    lines: { listingId: string; quantity: string }[],
+  ): Promise<void> {
+    await this.repository.manager.transaction(async (manager) => {
+      await manager.upsert(
+        CartLine,
+        lines.map((line) => ({ userId, ...line })),
+        { conflictPaths: ['userId', 'listingId'] },
+      );
+    });
+  }
+
   async remove(userId: string, listingId: string): Promise<void> {
     await this.repository.delete({ userId, listingId });
   }
