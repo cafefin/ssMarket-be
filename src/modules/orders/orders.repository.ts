@@ -322,6 +322,84 @@ export class OrdersRepository {
     };
   }
 
+  /** Orders of the pre-order round, cancelled ones included. */
+  async countForCampaign(campaignId: string): Promise<number> {
+    const [row]: Array<{ count: number }> = await this.repository.query(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE campaign_id = $1`,
+      [campaignId],
+    );
+    return row.count;
+  }
+
+  /** Every order of the round, oldest first, for the seller's summary. */
+  listForCampaign(
+    campaignId: string,
+    includeCancelled: boolean,
+  ): Promise<Order[]> {
+    return this.repository.find({
+      where: {
+        campaignId,
+        ...(includeCancelled
+          ? {}
+          : { fulfillmentStatus: Not(FulfillmentStatus.Cancelled) }),
+      },
+      relations: RELATIONS,
+      order: { createdAt: 'ASC', id: 'ASC', ...LINE_ORDER },
+    });
+  }
+
+  /**
+   * Totals over the round's live (not cancelled) orders, computed by the
+   * database so they cannot drift from the rows.
+   */
+  async totalsForCampaign(campaignId: string): Promise<CampaignTotals> {
+    const [row]: Array<{ order_count: number; total: string; paid: string }> =
+      await this.repository.query(
+        `SELECT COUNT(*)::int AS order_count,
+                COALESCE(SUM(total_amount), 0) AS total,
+                COALESCE(SUM(total_amount) FILTER (WHERE payment_status = 'paid'), 0) AS paid
+           FROM orders
+          WHERE campaign_id = $1 AND fulfillment_status <> 'cancelled'`,
+        [campaignId],
+      );
+    return {
+      orderCount: row.order_count,
+      totalAmount: Number(row.total),
+      paidAmount: Number(row.paid),
+    };
+  }
+
+  /** Listing id to units ordered in the round's live orders. */
+  async itemTotalsForCampaign(
+    campaignId: string,
+  ): Promise<Map<string, number>> {
+    const rows: Array<{ listing_id: string; quantity: string }> =
+      await this.repository.query(
+        `SELECT ol.listing_id, SUM(ol.quantity) AS quantity
+           FROM order_lines ol
+           JOIN orders o ON o.id = ol.order_id
+          WHERE o.campaign_id = $1 AND o.fulfillment_status <> 'cancelled'
+          GROUP BY ol.listing_id`,
+        [campaignId],
+      );
+    return new Map(rows.map((row) => [row.listing_id, Number(row.quantity)]));
+  }
+
+  /** Which of the given orders belong to the round. */
+  async ordersOfCampaign(
+    orderIds: string[],
+    campaignId: string,
+  ): Promise<Set<string>> {
+    if (orderIds.length === 0) {
+      return new Set();
+    }
+    const rows: Array<{ id: string }> = await this.repository.query(
+      `SELECT id FROM orders WHERE campaign_id = $1 AND id = ANY($2::uuid[])`,
+      [campaignId, orderIds],
+    );
+    return new Set(rows.map((row) => row.id));
+  }
+
   /** Which of the given orders hold the listing. */
   async ordersOfListing(
     orderIds: string[],
@@ -345,4 +423,10 @@ export interface ListingTotals {
   paidAmount: number;
   /** Units ordered in live orders. */
   quantity: number;
+}
+
+export interface CampaignTotals {
+  orderCount: number;
+  totalAmount: number;
+  paidAmount: number;
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { Redis } from 'ioredis';
 import { DataSource } from 'typeorm';
@@ -55,6 +56,7 @@ describe('Orders of a pre-order round', () => {
   let seller: TestAgent;
   let minh: TestAgent;
   let lan: TestAgent;
+  let quynh: TestAgent;
   let campaign: TestCampaign;
   let a: TestListing;
   let b: TestListing;
@@ -158,6 +160,7 @@ describe('Orders of a pre-order round', () => {
     seller = await signIn(app, identity, 'seller');
     minh = await signIn(app, identity, 'minh');
     lan = await signIn(app, identity, 'lan');
+    quynh = await signIn(app, identity, 'quynh');
     await seller.patch('/users/me').send(bank).expect(200);
     campaign = await publishCampaign(seller, roundBody());
     [a, b, c] = [0, 1, 2].map((index) => itemOf(campaign, index));
@@ -539,6 +542,232 @@ describe('Orders of a pre-order round', () => {
 
       await edit(seller, placed.id, [[a, '2']]).expect(403);
       await edit(lan, placed.id, [[a, '2']]).expect(404);
+    });
+  });
+
+  describe('the seller’s view of the round', () => {
+    type Table = {
+      campaign: { id: string };
+      items: Array<{ listingId: string; title: string; unit: string }>;
+      rows: Array<{
+        orderId: string;
+        buyer: { name: string };
+        quantities: number[];
+        totalAmount: number;
+        fulfillmentStatus: string;
+      }>;
+      itemTotals: number[];
+      totals: {
+        orderCount: number;
+        totalAmount: number;
+        paidAmount: number;
+        outstandingAmount: number;
+      };
+    };
+    type Results = {
+      results: Array<{ orderId: string; ok: boolean; code: string | null }>;
+    };
+    let forMinh: Order;
+    let forLan: Order;
+    let cancelled: Order;
+
+    beforeEach(async () => {
+      forMinh = await buy(
+        minh,
+        [
+          [a, '2'],
+          [c, '1'],
+        ],
+        { paymentMethod: 'prepaid_qr', note: '=1+1' },
+      );
+      forLan = await buy(lan, [[b, '10']]);
+      cancelled = await buy(quynh, [[a, '1']]);
+      await quynh.post(`/orders/${cancelled.id}/cancel`).send({}).expect(200);
+    });
+
+    const table = async (query = '') =>
+      (
+        await seller
+          .get(`/campaigns/${campaign.id}/summary${query}`)
+          .expect(200)
+      ).body as Table;
+
+    describe('GET /campaigns/:id/summary', () => {
+      it('has a column per product, a row per live order and SQL totals', async () => {
+        const body = await table();
+
+        expect(body.campaign.id).toBe(campaign.id);
+        expect(body.items.map((item) => item.title)).toEqual([
+          'Bánh bao chay',
+          'Bánh bao nhân thịt',
+          'Bánh bao trứng cút',
+        ]);
+        expect(body.rows.map((row) => row.orderId)).toEqual([
+          forMinh.id,
+          forLan.id,
+        ]);
+        expect(body.rows.map((row) => row.quantities)).toEqual([
+          [2, 0, 1],
+          [0, 10, 0],
+        ]);
+        expect(body.itemTotals).toEqual([2, 10, 1]);
+        expect(body.totals).toEqual({
+          orderCount: 2,
+          totalAmount: 212000,
+          paidAmount: 0,
+          outstandingAmount: 212000,
+        });
+      });
+
+      it('shows cancelled orders on request without counting them', async () => {
+        const body = await table('?includeCancelled=true');
+
+        expect(body.rows).toHaveLength(3);
+        expect(body.rows[2]).toMatchObject({
+          orderId: cancelled.id,
+          fulfillmentStatus: 'cancelled',
+        });
+        expect(body.itemTotals).toEqual([2, 10, 1]);
+        expect(body.totals.orderCount).toBe(2);
+        expect(body.totals.totalAmount).toBe(212000);
+      });
+
+      it('counts a payment once the seller confirms it', async () => {
+        await seller.post(`/orders/${forMinh.id}/confirm-payment`).expect(200);
+
+        const { totals } = await table();
+
+        expect(totals.paidAmount).toBe(52000);
+        expect(totals.outstandingAmount).toBe(160000);
+      });
+
+      it('keeps a stopped product that was ordered and drops one nobody ordered', async () => {
+        await rewrite(campaign, (item, index) =>
+          index === 0 || index === 1 ? { ...item, selling: false } : item,
+        );
+        await lan.post(`/orders/${forLan.id}/cancel`).send({}).expect(200);
+        // A and C are ordered by Minh; B was ordered only by the cancelled Lan.
+        const body = await table();
+
+        expect(body.items.map((item) => item.listingId)).toEqual([a.id, c.id]);
+        expect(body.rows[0].quantities).toEqual([2, 1]);
+        expect(body.itemTotals).toEqual([2, 1]);
+      });
+
+      it('is only for the seller of the round', async () => {
+        await minh.get(`/campaigns/${campaign.id}/summary`).expect(403);
+        await seller.get(`/campaigns/${randomUUID()}/summary`).expect(404);
+        await seller.get('/campaigns/not-a-uuid/summary').expect(400);
+      });
+    });
+
+    describe('GET /campaigns/:id/summary.csv', () => {
+      const download = (agent: TestAgent) =>
+        agent
+          .get(`/campaigns/${campaign.id}/summary.csv`)
+          .buffer(true)
+          .parse((res, done) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => done(null, Buffer.concat(chunks)));
+          })
+          .expect(200);
+      const linesOf = (body: Buffer) =>
+        body.toString('utf8').replace(/^﻿/, '').trimEnd().split('\r\n');
+
+      it('downloads the table as a spreadsheet-ready file', async () => {
+        const response = await download(seller);
+
+        expect(response.headers['content-type']).toBe(
+          'text/csv; charset=utf-8',
+        );
+        expect(response.headers['cache-control']).toBe('no-store');
+        expect(response.headers['content-disposition']).toMatch(
+          /^attachment; filename="ssmarket-banh-bao-tuan-nay-\d{4}-\d{2}-\d{2}\.csv"$/,
+        );
+        const body = response.body as Buffer;
+        expect([...body.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+        const lines = linesOf(body);
+        expect(lines[0]).toContain(
+          'Mã đơn,Người mua,Email,Nơi giao,Bánh bao chay (cái),Bánh bao nhân thịt (cái),Bánh bao trứng cút (cái),Tổng tiền,',
+        );
+        expect(lines[1]).toContain(',2,0,1,52000,');
+        expect(lines[1]).toContain("'=1+1");
+        expect(lines[2]).toContain(',0,10,0,160000,');
+        expect(lines).toHaveLength(6);
+        expect(lines[3]).toContain('Tổng,2 đơn,,,2,10,1,212000');
+      });
+
+      it('is written in the seller’s language', async () => {
+        await seller.patch('/users/me').send({ locale: 'en' }).expect(200);
+
+        const lines = linesOf((await download(seller)).body as Buffer);
+
+        expect(lines[0]).toMatch(/^Order code,Buyer,Email,Deliver to,/);
+      });
+
+      it('is only for the seller of the round', async () => {
+        await minh.get(`/campaigns/${campaign.id}/summary.csv`).expect(403);
+      });
+    });
+
+    describe('POST /campaigns/:id/orders/bulk', () => {
+      it('runs each order alone and reports the one from another round', async () => {
+        const second = await publishCampaign(
+          seller,
+          roundBody({ title: 'Bánh bao tuần sau' }),
+        );
+        const elsewhere = await buy(minh, [[itemOf(second, 0), '1']]);
+
+        const response = await seller
+          .post(`/campaigns/${campaign.id}/orders/bulk`)
+          .send({
+            action: 'deliver',
+            orderIds: [forMinh.id, forLan.id, elsewhere.id],
+          })
+          .expect(200);
+
+        expect((response.body as Results).results).toEqual([
+          { orderId: forMinh.id, ok: true, code: null },
+          { orderId: forLan.id, ok: true, code: null },
+          { orderId: elsewhere.id, ok: false, code: 'NOT_IN_CAMPAIGN' },
+        ]);
+        const delivered = await seller.get(`/orders/${forMinh.id}`).expect(200);
+        expect(delivered.body).toMatchObject({
+          fulfillmentStatus: 'delivered',
+        });
+      });
+
+      it('is only for the seller of the round', async () => {
+        await minh
+          .post(`/campaigns/${campaign.id}/orders/bulk`)
+          .send({ action: 'deliver', orderIds: [forMinh.id] })
+          .expect(403);
+      });
+    });
+
+    describe('GET /campaigns/:id/my-order', () => {
+      it('tells a buyer whether they already ordered', async () => {
+        const mine = await minh.get(`/campaigns/${campaign.id}/my-order`);
+        const other = await seller.get(`/campaigns/${campaign.id}/my-order`);
+        const gone = await quynh.get(`/campaigns/${campaign.id}/my-order`);
+
+        expect(mine.body).toEqual({ orderId: forMinh.id });
+        expect(other.body).toEqual({ orderId: null });
+        expect(gone.body).toEqual({ orderId: null });
+      });
+
+      it('answers 404 for a missing round and for a draft', async () => {
+        const draft = await seller
+          .post('/campaigns')
+          .send(campaignBody())
+          .expect(201);
+
+        await minh.get(`/campaigns/${randomUUID()}/my-order`).expect(404);
+        await minh
+          .get(`/campaigns/${(draft.body as TestCampaign).id}/my-order`)
+          .expect(404);
+      });
     });
   });
 });
