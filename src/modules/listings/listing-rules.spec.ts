@@ -1,6 +1,8 @@
 import {
   businessDate,
+  isCampaignOpen,
   isListingOpen,
+  productProblems,
   suggestReopenDates,
   type ListingInput,
   validateListingInput,
@@ -381,5 +383,43 @@ describe('suggestReopenDates', () => {
         }),
       ),
     ).toEqual([]);
+  });
+});
+
+describe('isCampaignOpen', () => {
+  const now = new Date('2026-10-12T00:00:00Z');
+  const deadline = new Date('2026-10-16T10:00:00Z');
+
+  it('is true when open with a future deadline', () => {
+    expect(isCampaignOpen({ status: 'open', orderDeadline: deadline }, now)).toBe(
+      true,
+    );
+  });
+
+  it.each(['draft', 'closed'] as const)('is false when %s', (status) => {
+    expect(isCampaignOpen({ status, orderDeadline: deadline }, now)).toBe(false);
+  });
+
+  it('is false when the deadline equals now', () => {
+    expect(isCampaignOpen({ status: 'open', orderDeadline: now }, now)).toBe(
+      false,
+    );
+  });
+});
+
+describe('productProblems', () => {
+  it('returns the problems of one product', () => {
+    expect(
+      productProblems({
+        mode: ListingMode.Preorder,
+        unit: 'thùng',
+        unitPrice: 999,
+        stockQuantity: null,
+        combos: [],
+      }),
+    ).toEqual([
+      'unit is not supported',
+      'unit price must be a whole number from 1000 to 1000000000',
+    ]);
   });
 });

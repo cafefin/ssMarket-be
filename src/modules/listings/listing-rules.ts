@@ -46,7 +46,7 @@ export function businessDate(instant: Date): string {
   }).format(instant);
 }
 
-function isRealDate(value: string): boolean {
+export function isRealDate(value: string): boolean {
   if (!ISO_DATE.test(value)) {
     return false;
   }
@@ -56,7 +56,14 @@ function isRealDate(value: string): boolean {
   );
 }
 
-function productProblems(input: ListingInput): string[] {
+/** Unit, price, stock and combo rules of one product. */
+export function productProblems(input: {
+  mode: ListingMode;
+  unit: string;
+  unitPrice: number;
+  stockQuantity: string | null;
+  combos: Combo[];
+}): string[] {
   const problems: string[] = [];
 
   if (!(LISTING_UNITS as readonly string[]).includes(input.unit)) {
@@ -98,7 +105,11 @@ function productProblems(input: ListingInput): string[] {
   return problems;
 }
 
-function comboProblems(input: ListingInput): string[] {
+function comboProblems(input: {
+  unit: string;
+  unitPrice: number;
+  combos: Combo[];
+}): string[] {
   const problems: string[] = [];
   if (input.combos.length > LISTING_LIMITS.combosMax) {
     problems.push(`at most ${LISTING_LIMITS.combosMax} combos`);
@@ -205,6 +216,17 @@ export function validateListingInput(
 }
 
 /** Open means buyers can see it and, from phase 2b, order from it. */
+/** Open means buyers can order: published, not closed, deadline ahead. */
+export function isCampaignOpen(
+  campaign: { status: 'draft' | 'open' | 'closed'; orderDeadline: Date },
+  now: Date,
+): boolean {
+  return (
+    campaign.status === 'open' &&
+    campaign.orderDeadline.getTime() > now.getTime()
+  );
+}
+
 export function isListingOpen(
   listing: { status: ListingStatus; orderDeadline: Date | null },
   now: Date,
