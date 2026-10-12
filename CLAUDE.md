@@ -32,7 +32,8 @@ src/
     ├── banks/       static directory of banks that accept VietQR
     ├── categories/  categories, managed by admins
     ├── listings/    listings (one product each), combos, images, search, stock
-    ├── orders/      orders, state rules, idempotency
+    ├── campaigns/   pre-order rounds: shared terms and their products
+    ├── orders/      orders, state rules, idempotency, round summary
     ├── cart/        server-side cart, checkout preview and checkout
     ├── payments/    VietQR payload builder
     ├── dev-login/   development-only sign-in
@@ -87,37 +88,81 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 `PAYMENT_METHOD_NOT_ACCEPTED` (422), `INVALID_QUANTITY` (422),
 `IDEMPOTENCY_KEY_REQUIRED` (400), `ORDER_NOT_EDITABLE` (409),
 `SUMMARY_TOO_LARGE` (422), `CATEGORY_EXISTS` (409), `CATEGORY_INACTIVE` (400),
-`CART_FULL` (409), `CHECKOUT_CHANGED` (409).
+`CART_FULL` (409), `CHECKOUT_CHANGED` (409), `INVALID_CAMPAIGN` (422),
+`CAMPAIGN_ITEM_HAS_ORDERS` (409).
 Pass structured data the frontend needs
 (which items ran out, the id of an existing order) as the `details` argument.
 
 ## Listings
 
-- A listing is **one product**: one unit, one unit price, its own stock and
-  combos. Its mode, `in_stock` or `preorder`, never changes. An in-stock
-  product has `stock_quantity`; a pre-order has an order deadline and a
-  delivery date and no stock limit (NULL). There are no options or variants.
-- A listing is **open** when `status = 'open'` and its deadline, if any, is in
-  the future. That condition is evaluated in queries and in `isListingOpen`;
-  no background job flips a status.
-- Rules that depend only on the input live in `listing-rules.ts` as pure
-  functions. DTO classes check shape and types only.
+- A listing is **one product**: one unit, one unit price, its own combos.
+  Its mode, `in_stock` or `preorder`, never changes. An in-stock product has
+  `stock_quantity`. A pre-order product is an **item of a campaign** (see
+  "Campaigns"): it has no stock limit (NULL) and no deadline, delivery date or
+  payment flags of its own; the campaign holds them. `POST /listings` makes
+  in-stock goods only. There are no options or variants.
+- A listing is **open** when `status = 'open'` and, for a campaign item, its
+  campaign is open too. That condition is evaluated in queries and in
+  `isListingOpen` (which goes through `isCampaignOpen`); no background job
+  flips a status. `paymentTermsOf` gives the payment methods that apply: the
+  campaign's for an item, else the listing's own.
+- Rules that depend only on the input live in `listing-rules.ts` (listings)
+  and `campaign-rules.ts` (rounds) as pure functions. DTO classes check shape
+  and types only.
 - Money is integer VND. Quantities are `numeric(10,3)` and arrive from
   PostgreSQL as strings.
 - Other people get 404, not 403, for a listing they may not see.
+- A campaign item cannot be changed, published or closed through
+  `/listings/:id` (409 `INVALID_LISTING_STATE`); use its round. `GET
+  /users/me/listings` lists the seller's own goods only, not round items.
 - A summary carries `unitPrice`, `unit`, `stockQuantity` (null for a
-  pre-order), `hasCombos`, and the seller's `handle` (email before @).
-- `GET /listings?sort=deadline` lists pre-orders only, closing soonest first,
-  with its own cursor kind. It answers 400 together with `q` or
-  `mode=in_stock`.
+  pre-order), `hasCombos`, the seller's `handle` (email before @) and, for a
+  campaign item, `campaign` (`ListingCampaignDto`: id, title, deadline,
+  delivery date).
+- `GET /listings?mode=in_stock` (the default) lists goods that can still be
+  bought, newest first, and leaves out sold-out products
+  (`stock_quantity = 0`). `mode=preorder` lists the items of open rounds,
+  closing soonest first, with its own cursor kind. There is no `sort` parameter.
 - `GET /listings?seller=<uuid>` limits the list to one seller.
 - `condition` (`new` 100% … `worn` 70%, `CONDITION_PERCENT`) is required for
   in-stock goods outside perishable categories (`categories.is_perishable`)
   and refused elsewhere; `condition_percent` is stored for filtering.
-- `GET /listings?mode=in_stock` leaves out sold-out products
-  (`stock_quantity = 0`); without `mode` they are listed.
 - `GET /listings?minPrice&maxPrice` filters on the unit price;
   `minCondition` keeps second-hand goods at least that good.
+
+## Campaigns
+
+A campaign is a pre-order round (`campaigns`): a title, the shared terms and
+its products, which are rows of `listings` with `campaign_id`.
+
+- The campaign is the only source of the **order deadline, the delivery date
+  and the accepted payment methods**. Items store none of them
+  (`accepts_*` are NULL on an item). A round is open when its status is `open`
+  and the deadline is ahead (`isCampaignOpen`); a closed round or one past its
+  deadline takes no orders and no edits to orders.
+- `category_id` (and the seller) is copied from the campaign onto its items on
+  every save, so category filters and search keep working on `listings`.
+- **`CampaignsRepository` is the only writer of item rows**: create and
+  update save the campaign and all its items in one transaction (an item with
+  an `id` is changed, one without is added, one left out is removed), and
+  replace the items' combos. Nothing else inserts or updates a campaign item.
+- Item status follows the round: `draft` while the round is a draft, `open`
+  once it is published, and `closed` when the seller stops selling it
+  (`selling: false`). Closing the round ends it without changing item status;
+  the round decides. Only a draft round can be deleted.
+- An item that any order line references is **stopped, not deleted**: leaving
+  it out of an update answers 409 `CAMPAIGN_ITEM_HAS_ORDERS` (with the items);
+  `selling: false` keeps it. A stopped item stays in orders and in the summary.
+- Invalid input (bad title, dates or items, no payment method, a repeated item)
+  answers 422 `INVALID_CAMPAIGN` with the list of `problems`.
+- `POST /campaigns/:id/reopen` copies a finished round (closed, or past its
+  deadline) into a new draft: the same terms, the items that were on sale
+  (combos, and photos as separate files), dates moved forward by whole weeks,
+  `reopened_from_id` set. It never changes the source round or its orders.
+- Routes: `POST/GET /campaigns`, `GET /campaigns/mine`, `GET/PATCH/DELETE
+  /campaigns/:id`, `POST /campaigns/:id/publish|close|reopen`. Every write
+  bumps the listings cache version; the public round page is cached.
+- Module direction is `orders → campaigns → listings`; never the reverse.
 
 ## Combos
 
@@ -146,10 +191,16 @@ Pass structured data the frontend needs
 ## Orders
 
 - An order line is one product (`order_lines.listing_id`) with its title,
-  unit, price and combos copied. `orders.listing_id` is set only for
-  pre-orders: an in-stock order may hold several products of one seller.
-  Order counts, seller filters, the summary and bulk actions go through the
-  lines, and a summary shows only its listing's part of a mixed order.
+  unit, price and combos copied. `orders.campaign_id` is set only for
+  pre-orders: **one order per buyer per round**, holding a line per product
+  (up to 50); an in-stock order may hold several products of one seller.
+  Order counts, seller filters and the listing summary go through the lines,
+  and a listing summary shows only its listing's part of a mixed order.
+- A buyer has at most one live (not cancelled) order per round
+  (`UQ_orders_one_active_preorder`); a second checkout answers
+  `ALREADY_ORDERED` with the id of the existing order, and the buyer edits
+  that order instead. `GET /campaigns/:id/my-order` returns `{ orderId }`
+  (null when none; 404 for a missing or draft round).
 - Orders are created only by `POST /checkout` ("buy now" is a checkout of
   one product). `OrdersService.createMany` places every order of a checkout
   in one transaction, all or none.
@@ -182,35 +233,49 @@ Pass structured data the frontend needs
 ## Seller tools
 
 - `GET /listings/:id/summary` is the table that replaces the seller's
-  spreadsheet: one row per order with its quantity. Totals come from SQL
-  aggregates in `OrdersRepository.totalsForListing`, never from adding up rows
-  in code, and never include cancelled orders.
-- `summary.csv` is written in the caller's `users.locale` (`vi` or `en`);
-  the labels live in `LABELS` in `summary-csv.ts`.
-- `summary.csv` is built by `buildSummaryCsv`. Buyers control some of that
+  spreadsheet for in-stock goods: one row per order with its quantity. A
+  campaign item has none (404); its round has one.
+- `GET /campaigns/:id/summary` is the same for a round (`CampaignSummaryService`):
+  one row per order, oldest first, with `quantities` aligned to `items`
+  (the round's products on sale or that anyone ordered, in round order), and
+  `itemTotals` per product. `?includeCancelled=true` adds cancelled orders as
+  rows. Both summaries refuse more than 1000 orders with `SUMMARY_TOO_LARGE`.
+- Totals come from SQL aggregates (`OrdersRepository.totalsForListing`,
+  `totalsForCampaign`, `itemTotalsForCampaign`), never from adding up rows in
+  code, and never include cancelled orders.
+- `summary.csv` (`/listings/:id/` and `/campaigns/:id/`) is written in the
+  caller's `users.locale` (`vi` or `en`); the labels live in `LABELS` in
+  `summary-csv.ts`, shared with `campaign-summary-csv.ts`. The round's file has
+  a quantity column per product.
+- The CSV builders pass every cell through `cell`. Buyers control some of that
   text, so any cell starting with `=`, `+`, `-` or `@` gets a leading
   apostrophe. Keep that when adding columns.
-- `POST /listings/:id/orders/bulk` runs each order through the normal
-  single-order method and reports per order; one failure never stops the rest.
+- `POST /listings/:id/orders/bulk` and `POST /campaigns/:id/orders/bulk` run
+  each order through the normal single-order method and report per order; one
+  failure never stops the rest. The loop is `runBulk` (`bulk-orders.ts`); an
+  order outside the listing or round is reported as `NOT_IN_LISTING` or
+  `NOT_IN_CAMPAIGN`.
 - `PATCH /orders/:id` lets a buyer replace the lines of a pre-order (up to 50,
   products of its round) while it is unpaid, pending and its round is open.
   Existing lines keep their snapshot price; a stopped product can be kept or
   lowered, never added or raised.
-- `POST /listings/:id/reopen` copies a finished pre-order round into a new
-  draft (price, combos, and image files as separate copies) with
-  `reopened_from_id` set. It never changes the source listing or its orders.
+- `POST /campaigns/:id/reopen` (see "Campaigns") starts the next round from a
+  finished one.
 - `orderCount` on a listing is a database-computed virtual column.
 
 ## Cart and checkout
 
 - `cart_lines` holds product and quantity per person (max 50, `CART_FULL`);
-  no price. `PUT /cart/lines/:listingId` refuses more than the stock left
+  no price. `PUT /cart/lines/:listingId` sets one line and `PUT /cart/lines`
+  sets several in one request; both refuse more than the stock left
   (`OUT_OF_STOCK`, with `available`). `GET /cart` groups by seller with
   current prices, combos applied and a `problem` per line
   (`LISTING_NOT_OPEN`, `OUT_OF_STOCK`). The cart never reserves stock.
-- `splitIntoOrders` (`cart/checkout-split.ts`) decides the orders: each
-  pre-order listing alone; a seller's in-stock goods together when their
-  listings share a payment method, otherwise one order per listing.
+- `splitIntoOrders` (`cart/checkout-split.ts`) decides the orders, grouping
+  by campaign: the products of one round share one order (key
+  `campaign:<id>`); a seller's in-stock goods together when their listings
+  share a payment method (`seller:<id>`), otherwise one order per listing
+  (`listing:<id>`).
 - `POST /checkout/preview` returns those orders with a `key`, prices and
   allowed payment methods. `POST /checkout` (`Idempotency-Key` required) sends
   the lines and one choice per key; a different split answers
@@ -231,8 +296,10 @@ statement for the order code.
   the stored `search_text` and to every user query. Never compare raw text.
 - `toTsQuery` is the only way a user query reaches `to_tsquery`. It keeps
   letters and digits only, so search operators cannot be injected.
-- Browsing pages by keyset on `(published_at, id)`, closing-soonest by keyset
-  on `(order_deadline, id)`; ranked results page by offset. Cursors are opaque
+- Browsing pages by keyset on `(published_at, id)` (`mode=in_stock`) and, for
+  `mode=preorder`, by keyset on the round's `(order_deadline, campaign id,
+  sort_order, id)`; ranked results page by offset. A campaign item matches on
+  its own `search_text`; rounds are searched through `GET /campaigns`. Cursors are opaque
   and validated in `listing-cursor.ts`.
 
 ## Cache
@@ -240,7 +307,7 @@ statement for the order code.
 - Read through `CacheService.getOrSet`. It never fails a request: when Redis
   is down it calls the loader.
 - Keys embed a namespace version: `listings:v{n}:...`. **Every write to a
-  listing, its combos or its images must call
+  listing, a campaign, their combos or images must call
   `cache.bumpVersion(LISTINGS_CACHE_NAMESPACE)`.**
 - Cache public data only. Drafts, closed listings and per-user lists are read
   from the database.
