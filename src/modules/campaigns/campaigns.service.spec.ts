@@ -13,6 +13,7 @@ import type { CampaignInput, CampaignItemInput } from './campaign-rules.js';
 import { Campaign, CampaignStatus } from './campaign.entity.js';
 import {
   CampaignItemsInUseError,
+  CampaignStateChangedError,
   type CampaignsRepository,
 } from './campaigns.repository.js';
 import { CampaignsService } from './campaigns.service.js';
@@ -307,6 +308,7 @@ describe('CampaignsService', () => {
           }),
         ],
         [],
+        CampaignStatus.Draft,
       );
       expect(repository.save.mock.calls[0][1]).not.toHaveProperty('status');
       expect(repository.save.mock.calls[0][1]).not.toHaveProperty('sellerId');
@@ -320,6 +322,7 @@ describe('CampaignsService', () => {
 
       await service.update(SELLER, 'campaign-1', edit());
 
+      expect(repository.save.mock.calls[0][4]).toBe(CampaignStatus.Open);
       expect(repository.save.mock.calls[0][2]).toEqual([
         expect.objectContaining({
           id: 'item-2',
@@ -445,6 +448,7 @@ describe('CampaignsService', () => {
       expect(repository.setStatus).toHaveBeenCalledWith(
         'campaign-1',
         { status: CampaignStatus.Open, publishedAt: NOW },
+        CampaignStatus.Draft,
         { from: ListingStatus.Draft, to: ListingStatus.Open, publishedAt: NOW },
       );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
@@ -511,10 +515,11 @@ describe('CampaignsService', () => {
 
       await service.close(SELLER, 'campaign-1');
 
-      expect(repository.setStatus).toHaveBeenCalledWith('campaign-1', {
-        status: CampaignStatus.Closed,
-        closedAt: NOW,
-      });
+      expect(repository.setStatus).toHaveBeenCalledWith(
+        'campaign-1',
+        { status: CampaignStatus.Closed, closedAt: NOW },
+        CampaignStatus.Open,
+      );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
     });
 
@@ -535,7 +540,10 @@ describe('CampaignsService', () => {
     it('deletes a draft', async () => {
       await service.remove(SELLER, 'campaign-1');
 
-      expect(repository.delete).toHaveBeenCalledWith('campaign-1');
+      expect(repository.delete).toHaveBeenCalledWith(
+        'campaign-1',
+        CampaignStatus.Draft,
+      );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
     });
 
@@ -558,6 +566,78 @@ describe('CampaignsService', () => {
       );
       expect(repository.delete).not.toHaveBeenCalled();
     });
+  });
+
+  describe('a round that changed under a write', () => {
+    const open = () => stored({ status: CampaignStatus.Open });
+    const calls: Array<[string, () => Promise<unknown>, () => void]> = [
+      [
+        'update',
+        () => service.update(SELLER, 'campaign-1', input()),
+        () =>
+          repository.save.mockRejectedValue(
+            new CampaignStateChangedError(false),
+          ),
+      ],
+      [
+        'publish',
+        () => service.publish(SELLER, 'campaign-1'),
+        () =>
+          repository.setStatus.mockRejectedValue(
+            new CampaignStateChangedError(false),
+          ),
+      ],
+      [
+        'close',
+        () => service.close(SELLER, 'campaign-1'),
+        () =>
+          repository.setStatus.mockRejectedValue(
+            new CampaignStateChangedError(false),
+          ),
+      ],
+      [
+        'remove',
+        () => service.remove(SELLER, 'campaign-1'),
+        () =>
+          repository.delete.mockRejectedValue(
+            new CampaignStateChangedError(false),
+          ),
+      ],
+    ];
+
+    it.each(calls)(
+      '%s answers 409 INVALID_LISTING_STATE',
+      async (name, run, fail) => {
+        repository.findById.mockResolvedValue(
+          name === 'close' ? open() : stored(),
+        );
+        fail();
+
+        const error = await rejection(run());
+
+        expect(error.getStatus()).toBe(409);
+        expect(error.code).toBe('INVALID_LISTING_STATE');
+        expect(error.message).toBe('The round changed; reload and try again');
+        expect(cache.bumpVersion).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(calls)(
+      '%s answers 404 when the round is gone',
+      async (name, run, fail) => {
+        repository.findById.mockResolvedValue(
+          name === 'close' ? open() : stored(),
+        );
+        fail();
+        const gone = new CampaignStateChangedError(true);
+        repository.save.mockRejectedValue(gone);
+        repository.setStatus.mockRejectedValue(gone);
+        repository.delete.mockRejectedValue(gone);
+
+        await expect(run()).rejects.toBeInstanceOf(NotFoundException);
+        expect(cache.bumpVersion).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('getDetail', () => {
@@ -633,6 +713,23 @@ describe('CampaignsService', () => {
         ['item-3', true, 0, false],
       ]);
       expect(repository.itemUsage).not.toHaveBeenCalled();
+    });
+
+    it('never shows others a product that is not open, even in an open round', async () => {
+      repository.findById.mockResolvedValue(
+        stored({
+          status: CampaignStatus.Open,
+          items: [
+            storedItem({ status: ListingStatus.Draft }),
+            storedItem({ id: 'item-2', status: ListingStatus.Open }),
+          ],
+        }),
+      );
+
+      const detail = await service.getDetail(OTHER, 'campaign-1');
+
+      expect(detail.items.map((item) => item.id)).toEqual(['item-2']);
+      expect(detail.itemCount).toBe(1);
     });
 
     it('still shows a closed or expired round, as not open', async () => {

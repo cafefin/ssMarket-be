@@ -23,6 +23,7 @@ import { type Campaign, CampaignStatus } from './campaign.entity.js';
 import {
   CampaignItemsInUseError,
   CampaignsRepository,
+  CampaignStateChangedError,
   type ItemWrite,
 } from './campaigns.repository.js';
 import {
@@ -88,6 +89,7 @@ export class CampaignsService {
           this.itemWrite(item, index, campaign.status, now),
         ),
         currentIds.filter((itemId) => !kept.has(itemId)),
+        campaign.status,
       );
     } catch (error) {
       if (error instanceof CampaignItemsInUseError) {
@@ -98,7 +100,7 @@ export class CampaignsService {
           { items: error.items },
         );
       }
-      throw error;
+      this.rethrowStateChange(error);
     }
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -123,11 +125,16 @@ export class CampaignsService {
       throw this.categoryInactive();
     }
 
-    await this.campaigns.setStatus(
-      id,
-      { status: CampaignStatus.Open, publishedAt: now },
-      { from: ListingStatus.Draft, to: ListingStatus.Open, publishedAt: now },
-    );
+    try {
+      await this.campaigns.setStatus(
+        id,
+        { status: CampaignStatus.Open, publishedAt: now },
+        CampaignStatus.Draft,
+        { from: ListingStatus.Draft, to: ListingStatus.Open, publishedAt: now },
+      );
+    } catch (error) {
+      this.rethrowStateChange(error);
+    }
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
     return this.mustFind(id);
@@ -140,10 +147,15 @@ export class CampaignsService {
       throw this.invalidState('Only an open round can be closed');
     }
 
-    await this.campaigns.setStatus(id, {
-      status: CampaignStatus.Closed,
-      closedAt: new Date(),
-    });
+    try {
+      await this.campaigns.setStatus(
+        id,
+        { status: CampaignStatus.Closed, closedAt: new Date() },
+        CampaignStatus.Open,
+      );
+    } catch (error) {
+      this.rethrowStateChange(error);
+    }
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
     return this.mustFind(id);
@@ -155,7 +167,11 @@ export class CampaignsService {
     if (campaign.status !== CampaignStatus.Draft) {
       throw this.invalidState('Only a draft can be deleted');
     }
-    await this.campaigns.delete(id);
+    try {
+      await this.campaigns.delete(id, CampaignStatus.Draft);
+    } catch (error) {
+      this.rethrowStateChange(error);
+    }
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
   }
 
@@ -284,6 +300,17 @@ export class CampaignsService {
         'Add your bank details before accepting QR payments',
       );
     }
+  }
+
+  /** Turns a lost race on the round's state into its HTTP error; rethrows anything else. */
+  private rethrowStateChange(error: unknown): never {
+    if (error instanceof CampaignStateChangedError) {
+      if (error.missing) {
+        throw new NotFoundException('Round not found');
+      }
+      throw this.invalidState('The round changed; reload and try again');
+    }
+    throw error;
   }
 
   private invalidState(message: string): DomainException {

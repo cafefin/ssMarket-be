@@ -26,6 +26,11 @@ function isSelling(item: Listing): boolean {
   return item.status !== ListingStatus.Closed;
 }
 
+/** What other people may see: the product is open for orders. */
+function isOpen(item: Listing): boolean {
+  return item.status === ListingStatus.Open;
+}
+
 export class CampaignItemDto {
   @ApiProperty({ format: 'uuid', description: 'Also the id of its listing' })
   id!: string;
@@ -163,7 +168,9 @@ export class CampaignDetailDto extends CampaignSummaryDto {
     now: Date,
     usage?: ReadonlyMap<string, CampaignItemUsage>,
   ): CampaignDetailDto {
-    const selling = campaign.items.filter(isSelling);
+    // The seller's counts follow what they chose to sell; everyone else sees
+    // only what is open, whatever state a stray product is in.
+    const selling = campaign.items.filter(usage ? isSelling : isOpen);
     const dto = new CampaignDetailDto();
     dto.id = campaign.id;
     dto.title = campaign.title;

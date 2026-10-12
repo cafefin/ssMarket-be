@@ -481,4 +481,86 @@ describe('Campaigns API', () => {
       .expect(409);
     expect(cancelled.body.code).toBe('INVALID_ORDER_STATE');
   });
+
+  describe('concurrent writes to one round', () => {
+    it('publishes a draft once when two requests race', async () => {
+      const draft = await createDraft();
+
+      const [first, second] = await Promise.all([
+        seller.post(`/campaigns/${draft.id}/publish`),
+        seller.post(`/campaigns/${draft.id}/publish`),
+      ]);
+
+      expect([first.status, second.status].sort((a, b) => a - b)).toEqual([
+        200, 409,
+      ]);
+      const loser = first.status === 409 ? first : second;
+      expect(loser.body.code).toBe('INVALID_LISTING_STATE');
+      const rows: Array<{ published_at: Date }> = await dataSource.query(
+        `SELECT published_at FROM campaigns WHERE id = $1`,
+        [draft.id],
+      );
+      const winner = first.status === 200 ? first : second;
+      expect(rows[0].published_at.toISOString()).toBe(winner.body.publishedAt);
+    });
+
+    it('never leaves a product as a draft inside an open round', async () => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const draft = await createDraft();
+        const responses = await Promise.all([
+          seller.patch(`/campaigns/${draft.id}`).send(
+            campaignBody({
+              title: `Bánh bao lần ${attempt}`,
+              items: sameItems(draft),
+            }),
+          ),
+          seller.post(`/campaigns/${draft.id}/publish`),
+        ]);
+        for (const response of responses) {
+          expect([200, 409]).toContain(response.status);
+        }
+
+        const read = await seller.get(`/campaigns/${draft.id}`).expect(200);
+        const round = read.body as TestCampaign;
+        const listed = (await preorderItems()).filter(
+          (item) => item.campaign?.id === draft.id,
+        );
+        // The publish may lose to nothing: PATCH never changes the status.
+        expect(round.status).toBe('open');
+        expect(listed.map((item) => item.id).sort()).toEqual(
+          round.items
+            .filter((item) => item.selling)
+            .map((item) => item.id)
+            .sort(),
+        );
+        const drafts: Array<{ n: number }> = await dataSource.query(
+          `SELECT COUNT(*)::int AS n FROM listings
+            WHERE campaign_id = $1 AND status = 'draft'`,
+          [draft.id],
+        );
+        expect(drafts[0].n).toBe(0);
+      }
+    });
+
+    it('does not deadlock a checkout against an edit of the same round', async () => {
+      const campaign = await publishCampaign(seller);
+      const statuses: number[] = [];
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const person = await signIn(app, identity, `buyer-${attempt}`);
+        const [placed, edited] = await Promise.all([
+          checkout(person, [{ listing: itemOf(campaign), quantity: '1' }]),
+          seller.patch(`/campaigns/${campaign.id}`).send(
+            campaignBody({
+              title: `Bánh bao đợt ${attempt}`,
+              items: sameItems(campaign),
+            }),
+          ),
+        ]);
+        statuses.push(placed.status, edited.status);
+      }
+      expect(statuses.filter((status) => status >= 500)).toEqual([]);
+      expect(statuses.filter((status) => status === 201)).toHaveLength(10);
+      expect(statuses.filter((status) => status === 200)).toHaveLength(10);
+    });
+  });
 });

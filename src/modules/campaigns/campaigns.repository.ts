@@ -68,6 +68,16 @@ export class CampaignItemsInUseError extends Error {
   }
 }
 
+/**
+ * Thrown when the round is no longer in the state a write was based on
+ * (another request published, closed or deleted it first).
+ */
+export class CampaignStateChangedError extends Error {
+  constructor(readonly missing: boolean) {
+    super(missing ? 'Campaign not found' : 'Campaign state changed');
+  }
+}
+
 const FOREIGN_KEY_VIOLATION = '23503';
 const ORDER_LINE_LISTING_FK = 'FK_order_lines_listing';
 
@@ -122,22 +132,36 @@ export class CampaignsRepository {
   }
 
   /**
-   * One transaction: locks the campaign row, refuses to delete items that
-   * order lines reference (CampaignItemsInUseError), updates the campaign,
-   * updates/inserts items (replacing combos), deletes `deleteIds`.
+   * One transaction: locks the campaign row, checks it is still in
+   * `expectedStatus` (CampaignStateChangedError otherwise), refuses to
+   * delete items that order lines reference (CampaignItemsInUseError),
+   * updates the campaign, updates/inserts items (replacing combos), deletes
+   * `deleteIds`.
    */
   async save(
     id: string,
     fields: Partial<CampaignFields>,
     items: ItemWrite[],
     deleteIds: string[],
+    expectedStatus: CampaignStatus,
   ): Promise<void> {
     try {
       await this.repository.manager.transaction(async (manager) => {
-        await manager.query(
-          `SELECT id FROM campaigns WHERE id = $1 FOR UPDATE`,
+        // FOR NO KEY UPDATE serialises saves but, unlike FOR UPDATE, does
+        // not conflict with the FOR KEY SHARE that an order insert takes on
+        // this row through its foreign key. Checkout locks item rows first
+        // and the campaign row second; this save does the reverse, so a
+        // stronger lock here could deadlock with it.
+        const locked: Array<{ status: CampaignStatus }> = await manager.query(
+          `SELECT status FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`,
           [id],
         );
+        if (locked.length === 0) {
+          throw new CampaignStateChangedError(true);
+        }
+        if (locked[0].status !== expectedStatus) {
+          throw new CampaignStateChangedError(false);
+        }
         const inUse = await itemsInUse(manager, deleteIds);
         if (inUse.length > 0) {
           throw new CampaignItemsInUseError(inUse);
@@ -165,14 +189,28 @@ export class CampaignsRepository {
     }
   }
 
-  /** Sets the campaign's status and, when given, every item with status `from` to `to`. */
+  /**
+   * Sets the campaign's status and, when given, every item with status
+   * `from` to `to`. Only when the round is still in `expectedStatus`;
+   * CampaignStateChangedError otherwise.
+   */
   async setStatus(
     id: string,
     fields: Partial<CampaignFields>,
+    expectedStatus: CampaignStatus,
     items?: { from: ListingStatus; to: ListingStatus; publishedAt?: Date },
   ): Promise<void> {
     await this.repository.manager.transaction(async (manager) => {
-      await manager.update(Campaign, { id }, fields);
+      const result = await manager.update(
+        Campaign,
+        { id, status: expectedStatus },
+        fields,
+      );
+      if (!result.affected) {
+        throw new CampaignStateChangedError(
+          !(await manager.exists(Campaign, { where: { id } })),
+        );
+      }
       if (items) {
         await manager.update(
           Listing,
@@ -186,9 +224,17 @@ export class CampaignsRepository {
     });
   }
 
-  /** Deletes the campaign; its items, their combos and images go with it. */
-  async delete(id: string): Promise<void> {
-    await this.repository.delete({ id });
+  /**
+   * Deletes the campaign if it is still in `expectedStatus`; its items,
+   * their combos and images go with it. CampaignStateChangedError otherwise.
+   */
+  async delete(id: string, expectedStatus: CampaignStatus): Promise<void> {
+    const result = await this.repository.delete({ id, status: expectedStatus });
+    if (!result.affected) {
+      throw new CampaignStateChangedError(
+        !(await this.repository.exists({ where: { id } })),
+      );
+    }
   }
 
   /** Per item: live order count and whether any order line references it. */
@@ -290,18 +336,22 @@ async function writeItems(
       });
       listingId = result.identifiers[0].id as string;
     } else {
-      await manager.update(
-        Listing,
-        { id: listingId, campaignId: campaign.id },
-        columns,
-      );
-      if (item.publishedAt) {
-        await manager.query(
-          `UPDATE listings SET published_at = $2
-            WHERE id = $1 AND campaign_id = $3 AND published_at IS NULL`,
-          [listingId, item.publishedAt, campaign.id],
-        );
-      }
+      // An item that was not on sale at publish only gets its date now.
+      await manager
+        .createQueryBuilder()
+        .update(Listing)
+        .set({
+          ...columns,
+          ...(item.publishedAt
+            ? { publishedAt: () => 'COALESCE(published_at, :publishedAt)' }
+            : {}),
+        })
+        .where('id = :listingId AND campaign_id = :campaignId', {
+          listingId,
+          campaignId: campaign.id,
+        })
+        .setParameter('publishedAt', item.publishedAt)
+        .execute();
       await manager.delete(ListingCombo, { listingId });
     }
     if (item.combos.length > 0) {

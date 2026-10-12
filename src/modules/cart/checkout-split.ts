@@ -18,7 +18,10 @@ export interface PlannedOrder {
   key: string;
   sellerId: string;
   listingIds: string[];
-  /** Methods every listing in the order accepts; never empty. */
+  /**
+   * Methods every listing in the order accepts. Empty for a campaign order
+   * whose round accepts none.
+   */
   paymentMethods: PaymentMethod[];
 }
 
