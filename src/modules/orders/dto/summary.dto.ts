@@ -21,12 +21,6 @@ export class SummaryListingDto {
 
   @ApiProperty({ example: 'cái' })
   unit!: string;
-
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
-  orderDeadline!: string | null;
-
-  @ApiProperty({ type: String, format: 'date', nullable: true })
-  deliveryDate!: string | null;
 }
 
 export class SummaryBuyerDto {

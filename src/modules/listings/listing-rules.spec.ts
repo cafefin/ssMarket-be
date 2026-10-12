@@ -2,6 +2,7 @@ import {
   businessDate,
   isCampaignOpen,
   isListingOpen,
+  paymentTermsOf,
   productProblems,
   suggestReopenDates,
   type ListingInput,
@@ -22,8 +23,6 @@ const inStock = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   description: 'Còn mới 90%',
   acceptsPrepaidQr: false,
   acceptsPayOnDelivery: true,
-  orderDeadline: null,
-  deliveryDate: null,
   condition: ListingCondition.LikeNew,
   unit: 'cái',
   unitPrice: 500_000,
@@ -32,6 +31,7 @@ const inStock = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   ...overrides,
 });
 
+/** What a pre-order looked like before rounds; no longer a listing input. */
 const preorder = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   mode: ListingMode.Preorder,
   title: 'Hoa quả tuần 41',
@@ -39,9 +39,6 @@ const preorder = (overrides: Partial<ListingInput> = {}): ListingInput => ({
   description: '',
   acceptsPrepaidQr: true,
   acceptsPayOnDelivery: true,
-  // 17:00 on 9 Oct in Vietnam
-  orderDeadline: new Date('2026-10-09T10:00:00Z'),
-  deliveryDate: '2026-10-12',
   condition: null,
   unit: 'kg',
   unitPrice: 35_000,
@@ -51,9 +48,14 @@ const preorder = (overrides: Partial<ListingInput> = {}): ListingInput => ({
 });
 
 describe('validateListingInput', () => {
-  it('accepts a valid in-stock listing and a valid pre-order listing', () => {
+  it('accepts a valid in-stock listing', () => {
     expect(validateListingInput(inStock())).toEqual([]);
-    expect(validateListingInput(preorder())).toEqual([]);
+  });
+
+  it('refuses a pre-order: those are created as a round', () => {
+    expect(validateListingInput(preorder())).toEqual([
+      'pre-orders are created as a round',
+    ]);
   });
 
   it.each<[string, ListingInput, string]>([
@@ -118,59 +120,19 @@ describe('validateListingInput', () => {
       inStock({ unit: 'hộp', stockQuantity: '1.5' }),
       'only kg may have fractional stock',
     ],
-    [
-      'an in-stock listing with a deadline',
-      inStock({ orderDeadline: new Date('2026-10-09T10:00:00Z') }),
-      'in-stock listings do not have an order deadline or delivery date',
-    ],
-    [
-      'a pre-order with stock',
-      preorder({ unit: 'kg', stockQuantity: '10' }),
-      'pre-orders do not have stock',
-    ],
-    [
-      'a pre-order without a deadline',
-      preorder({ orderDeadline: null }),
-      'pre-order listings need an order deadline',
-    ],
-    [
-      'a pre-order without a delivery date',
-      preorder({ deliveryDate: null }),
-      'pre-order listings need a delivery date',
-    ],
-    [
-      'an impossible delivery date',
-      preorder({ deliveryDate: '2026-02-30' }),
-      'delivery date must be a valid date (YYYY-MM-DD)',
-    ],
-    [
-      'a delivery date before the deadline',
-      preorder({ deliveryDate: '2026-10-08' }),
-      'delivery date cannot be before the order deadline',
-    ],
   ])('rejects %s', (_label, input, problem) => {
     expect(validateListingInput(input)).toContain(problem);
   });
 
-  it('allows fractional stock for kg and delivery on the deadline day', () => {
+  it('allows fractional stock for kg', () => {
     expect(
       validateListingInput(inStock({ unit: 'kg', stockQuantity: '2.5' })),
-    ).toEqual([]);
-    expect(
-      validateListingInput(preorder({ deliveryDate: '2026-10-09' })),
     ).toEqual([]);
   });
 
   it('reads the deadline day in Vietnam time, not UTC', () => {
     // 23:30 UTC on 8 Oct is already 06:30 on 9 Oct in Vietnam.
-    const deadline = new Date('2026-10-08T23:30:00Z');
-
-    expect(businessDate(deadline)).toBe('2026-10-09');
-    expect(
-      validateListingInput(
-        preorder({ orderDeadline: deadline, deliveryDate: '2026-10-08' }),
-      ),
-    ).toContain('delivery date cannot be before the order deadline');
+    expect(businessDate(new Date('2026-10-08T23:30:00Z'))).toBe('2026-10-09');
   });
 
   it('reports every problem at once', () => {
@@ -198,7 +160,7 @@ describe('condition', () => {
       'only in-stock goods outside food categories have a condition';
     expect(
       validateListingInput(preorder({ condition: ListingCondition.New })),
-    ).toEqual([message]);
+    ).toContain(message);
     expect(validateListingInput(inStock(), { isPerishable: true })).toEqual([
       message,
     ]);
@@ -290,15 +252,63 @@ describe('isListingOpen', () => {
   const past = new Date('2026-10-04T00:00:00Z');
 
   it.each([
-    [ListingStatus.Draft, null, false],
-    [ListingStatus.Closed, null, false],
-    [ListingStatus.Open, null, true],
-    [ListingStatus.Open, future, true],
-    [ListingStatus.Open, past, false],
-    [ListingStatus.Open, now, false],
-    [ListingStatus.Closed, future, false],
-  ])('status %s with deadline %s -> %s', (status, orderDeadline, expected) => {
-    expect(isListingOpen({ status, orderDeadline }, now)).toBe(expected);
+    [ListingStatus.Draft, false],
+    [ListingStatus.Closed, false],
+    [ListingStatus.Open, true],
+  ])('in-stock goods with status %s -> %s', (status, expected) => {
+    expect(isListingOpen({ status }, now)).toBe(expected);
+    expect(isListingOpen({ status, campaign: null }, now)).toBe(expected);
+  });
+
+  it.each([
+    [ListingStatus.Open, 'open' as const, future, true],
+    [ListingStatus.Open, 'open' as const, past, false],
+    [ListingStatus.Open, 'open' as const, now, false],
+    [ListingStatus.Open, 'draft' as const, future, false],
+    [ListingStatus.Open, 'closed' as const, future, false],
+    [ListingStatus.Closed, 'open' as const, future, false],
+    [ListingStatus.Draft, 'draft' as const, future, false],
+  ])(
+    'a product %s in a round %s with deadline %s -> %s',
+    (status, campaignStatus, orderDeadline, expected) => {
+      expect(
+        isListingOpen(
+          { status, campaign: { status: campaignStatus, orderDeadline } },
+          now,
+        ),
+      ).toBe(expected);
+    },
+  );
+});
+
+describe('paymentTermsOf', () => {
+  it('reads the terms of in-stock goods from the listing', () => {
+    expect(
+      paymentTermsOf({ acceptsPrepaidQr: true, acceptsPayOnDelivery: false }),
+    ).toEqual({ acceptsPrepaidQr: true, acceptsPayOnDelivery: false });
+    expect(
+      paymentTermsOf({
+        acceptsPrepaidQr: false,
+        acceptsPayOnDelivery: true,
+        campaign: null,
+      }),
+    ).toEqual({ acceptsPrepaidQr: false, acceptsPayOnDelivery: true });
+  });
+
+  it('reads the terms of a product of a round from the round', () => {
+    expect(
+      paymentTermsOf({
+        acceptsPrepaidQr: null,
+        acceptsPayOnDelivery: null,
+        campaign: { acceptsPrepaidQr: true, acceptsPayOnDelivery: false },
+      }),
+    ).toEqual({ acceptsPrepaidQr: true, acceptsPayOnDelivery: false });
+  });
+
+  it('accepts nothing when a product of a round was loaded without it', () => {
+    expect(
+      paymentTermsOf({ acceptsPrepaidQr: null, acceptsPayOnDelivery: null }),
+    ).toEqual({ acceptsPrepaidQr: false, acceptsPayOnDelivery: false });
   });
 });
 
@@ -375,14 +385,10 @@ describe('suggestReopenDates', () => {
       new Date('2027-03-03T00:00:00Z'),
     );
 
-    expect(
-      validateListingInput(
-        preorder({
-          orderDeadline: next.orderDeadline,
-          deliveryDate: next.deliveryDate,
-        }),
-      ),
-    ).toEqual([]);
+    expect(next.orderDeadline.getTime()).toBeGreaterThan(
+      new Date('2027-03-03T00:00:00Z').getTime(),
+    );
+    expect(next.deliveryDate >= businessDate(next.orderDeadline)).toBe(true);
   });
 });
 
@@ -391,13 +397,15 @@ describe('isCampaignOpen', () => {
   const deadline = new Date('2026-10-16T10:00:00Z');
 
   it('is true when open with a future deadline', () => {
-    expect(isCampaignOpen({ status: 'open', orderDeadline: deadline }, now)).toBe(
-      true,
-    );
+    expect(
+      isCampaignOpen({ status: 'open', orderDeadline: deadline }, now),
+    ).toBe(true);
   });
 
   it.each(['draft', 'closed'] as const)('is false when %s', (status) => {
-    expect(isCampaignOpen({ status, orderDeadline: deadline }, now)).toBe(false);
+    expect(isCampaignOpen({ status, orderDeadline: deadline }, now)).toBe(
+      false,
+    );
   });
 
   it('is false when the deadline equals now', () => {

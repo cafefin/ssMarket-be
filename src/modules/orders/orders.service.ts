@@ -7,7 +7,11 @@ import {
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { TransactionRunner, type Tx } from '../../database/transaction.js';
 import { BanksService } from '../banks/banks.service.js';
-import { isListingOpen } from '../listings/listing-rules.js';
+import {
+  isCampaignOpen,
+  isListingOpen,
+  paymentTermsOf,
+} from '../listings/listing-rules.js';
 import type { Listing } from '../listings/listing.entity.js';
 import { ListingMode } from '../listings/listings.constants.js';
 import { ListingsService } from '../listings/listings.service.js';
@@ -80,7 +84,7 @@ export interface OrderRequest {
 interface OrderPlan {
   seller: Listing['seller'];
   /** Set for a pre-order: the round the order belongs to. */
-  preorderListingId: string | null;
+  campaignId: string | null;
   lines: NewOrderLine[];
   /** Listing id -> title, to explain a shortage. */
   titles: Map<string, string>;
@@ -202,10 +206,8 @@ export class OrdersService {
         );
       }
 
-      // Only pre-orders can be edited, and they always have their listing.
-      const listing = order.listingId
-        ? await this.listings.findById(order.listingId)
-        : null;
+      // Only pre-orders can be edited; for now they hold one product.
+      const listing = await this.listings.findById(order.lines[0].listingId);
       if (!listing) {
         throw new NotFoundException('Listing not found');
       }
@@ -294,7 +296,7 @@ export class OrdersService {
         const now = new Date();
         assertCanCancel(order, actor, {
           now,
-          orderDeadline: order.listing?.orderDeadline ?? null,
+          orderDeadline: order.campaign?.orderDeadline ?? null,
         });
 
         await this.listings.releaseStock(
@@ -408,9 +410,10 @@ export class OrdersService {
       this.buildLine(listings[index], line.quantity, index),
     );
 
-    if (preorder) {
+    const campaignId = preorder?.campaignId ?? null;
+    if (campaignId) {
       const existing = await this.orders.findActivePreorder(
-        preorder.id,
+        campaignId,
         buyerId,
       );
       if (existing) {
@@ -420,7 +423,7 @@ export class OrdersService {
 
     return {
       seller: listings[0].seller,
-      preorderListingId: preorder?.id ?? null,
+      campaignId,
       lines,
       titles: new Map(listings.map((listing) => [listing.id, listing.title])),
       paymentMethod: request.paymentMethod,
@@ -443,10 +446,11 @@ export class OrdersService {
   }
 
   private assertPaymentMethod(listing: Listing, method: PaymentMethod): void {
+    const terms = paymentTermsOf(listing);
     const accepted =
       method === PaymentMethod.PrepaidQr
-        ? listing.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)
-        : listing.acceptsPayOnDelivery;
+        ? terms.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)
+        : terms.acceptsPayOnDelivery;
     if (!accepted) {
       throw new DomainException(
         422,
@@ -536,10 +540,10 @@ export class OrdersService {
                 tx,
                 {
                   code: generateOrderCode(),
-                  listingId: plan.preorderListingId,
+                  campaignId: plan.campaignId,
                   buyerId,
                   sellerId: plan.seller.id,
-                  isPreorder: plan.preorderListingId !== null,
+                  isPreorder: plan.campaignId !== null,
                   paymentMethod: plan.paymentMethod,
                   deliveryLocation: plan.deliveryLocation,
                   note: plan.note,
@@ -570,9 +574,9 @@ export class OrdersService {
         }
         if (error.kind === 'active-preorder') {
           for (const plan of plans) {
-            if (plan.preorderListingId) {
+            if (plan.campaignId) {
               const existing = await this.orders.findActivePreorder(
-                plan.preorderListingId,
+                plan.campaignId,
                 buyerId,
               );
               if (existing) {
@@ -661,7 +665,7 @@ function editBlocker(order: Order, now: Date): string | null {
   if (order.paymentStatus !== PaymentStatus.Unpaid) {
     return 'payment_reported';
   }
-  return order.listing && isListingOpen(order.listing, now)
+  return order.campaign && isCampaignOpen(order.campaign, now)
     ? null
     : 'deadline_passed';
 }
@@ -670,7 +674,7 @@ function alreadyOrdered(orderId: string | undefined): DomainException {
   return new DomainException(
     409,
     'ALREADY_ORDERED',
-    'You already have an order on this pre-order listing',
+    'You already have an order in this pre-order round',
     { orderId },
   );
 }

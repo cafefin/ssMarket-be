@@ -28,8 +28,6 @@ const summary = (rows: SummaryRowDto[] = [row()]): SalesSummaryDto => ({
     id: 'l1',
     title: 'Cam sành',
     unit: 'kg',
-    orderDeadline: null,
-    deliveryDate: null,
   },
   rows,
   totals: {

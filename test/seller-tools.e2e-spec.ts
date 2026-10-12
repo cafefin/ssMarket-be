@@ -1,30 +1,25 @@
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { Redis } from 'ioredis';
-import sharp from 'sharp';
 import { DataSource } from 'typeorm';
 import type { GoogleIdentity } from '../src/modules/auth/auth.types.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
 import {
+  campaignBody,
   type Choice,
   checkout,
   inStockBody,
-  preorderBody,
+  itemBody,
+  itemOf,
   publish as publishAs,
+  publishCampaign,
+  type TestCampaign,
   type TestListing,
 } from './utils/market.js';
 
-type Listing = TestListing & {
-  status: string;
-  reopenedFromId: string | null;
-  orderDeadline: string;
-  deliveryDate: string;
-  acceptsPrepaidQr: boolean;
-  images: Array<{ id: string; url: string }>;
-};
+type Listing = TestListing;
 type Order = {
   id: string;
   code: string;
@@ -61,7 +56,7 @@ const bank = {
   bankAccountName: 'Nguyen Van An',
 };
 
-describe('Seller tools: summary, order editing, reopening', () => {
+describe('Seller tools: summary and order editing', () => {
   const identity: { current: GoogleIdentity | null } = { current: null };
   let app: NestExpressApplication;
   let dataSource: DataSource;
@@ -69,28 +64,44 @@ describe('Seller tools: summary, order editing, reopening', () => {
   let seller: TestAgent;
   let minh: TestAgent;
   let lan: TestAgent;
-  let round: Listing;
+  /** In-stock oranges by the kg: the listing whose summary is read. */
+  let stall: Listing;
 
-  const roundBody = (overrides: object = {}) =>
-    preorderBody({
+  const stallBody = (overrides: object = {}) =>
+    inStockBody({
       title: 'Cam sành tuần 41',
       description: 'Giao tận tầng',
+      categoryId: 2,
+      condition: undefined,
+      unit: 'kg',
+      unitPrice: 35000,
+      stockQuantity: '100',
       ...overrides,
     });
   const publish = async (body: object): Promise<Listing> =>
     (await publishAs(seller, body)) as Listing;
+  /** A pre-order round of one product, 35,000 đ per kg, QR or pay on delivery. */
+  const openRound = (title = 'Cam sành tuần 41'): Promise<TestCampaign> =>
+    publishCampaign(
+      seller,
+      campaignBody({
+        title: `Đợt ${title}`,
+        acceptsPrepaidQr: true,
+        items: [itemBody({ title, unit: 'kg', unitPrice: 35000 })],
+      }),
+    );
   const order = async (
     agent: TestAgent,
     quantity: string,
     choice: Choice = {},
-    listing: Listing = round,
+    listing: Listing = stall,
   ): Promise<Order> =>
     (
       (await checkout(agent, [{ listing, quantity }], choice).expect(201))
         .body as { orders: Order[] }
     ).orders[0];
   const summary = async (query = ''): Promise<Summary> =>
-    (await seller.get(`/listings/${round.id}/summary${query}`).expect(200))
+    (await seller.get(`/listings/${stall.id}/summary${query}`).expect(200))
       .body as Summary;
   const edit = (
     agent: TestAgent,
@@ -104,10 +115,10 @@ describe('Seller tools: summary, order editing, reopening', () => {
       deliveryLocation: 'Tầng 7',
       ...overrides,
     });
-  const expire = async (listing: Listing = round) => {
+  const expire = async (campaign: TestCampaign) => {
     await dataSource.query(
-      `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
-      [listing.id],
+      `UPDATE campaigns SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
+      [campaign.id],
     );
     await redis.flushdb();
   };
@@ -123,15 +134,11 @@ describe('Seller tools: summary, order editing, reopening', () => {
   beforeEach(async () => {
     await dataSource.query('TRUNCATE TABLE users CASCADE');
     await redis.flushdb();
-    await rm(process.env.UPLOAD_DIR as string, {
-      recursive: true,
-      force: true,
-    });
     seller = await signIn(app, identity, 'seller');
     minh = await signIn(app, identity, 'minh');
     lan = await signIn(app, identity, 'lan');
     await seller.patch('/users/me').send(bank).expect(200);
-    round = await publish(roundBody());
+    stall = await publish(stallBody());
   });
 
   afterAll(async () => {
@@ -212,20 +219,33 @@ describe('Seller tools: summary, order editing, reopening', () => {
     });
 
     it('is only for the seller of the listing', async () => {
-      await minh.get(`/listings/${round.id}/summary`).expect(403);
-      await minh.get(`/listings/${round.id}/summary.csv`).expect(403);
+      await minh.get(`/listings/${stall.id}/summary`).expect(403);
+      await minh.get(`/listings/${stall.id}/summary.csv`).expect(403);
       await minh
-        .post(`/listings/${round.id}/orders/bulk`)
+        .post(`/listings/${stall.id}/orders/bulk`)
         .send({ action: 'deliver', orderIds: [randomUUID()] })
         .expect(403);
       await seller.get(`/listings/${randomUUID()}/summary`).expect(404);
+    });
+
+    it('does not exist for a product of a pre-order round', async () => {
+      // The round has its own summary: test/campaign-orders.e2e-spec.ts.
+      const item = itemOf(await openRound());
+      const placed = await order(minh, '1', {}, item);
+
+      await seller.get(`/listings/${item.id}/summary`).expect(404);
+      await seller.get(`/listings/${item.id}/summary.csv`).expect(404);
+      await seller
+        .post(`/listings/${item.id}/orders/bulk`)
+        .send({ action: 'deliver', orderIds: [placed.id] })
+        .expect(404);
     });
   });
 
   describe('GET /listings/:id/summary.csv', () => {
     const download = (agent: TestAgent) =>
       agent
-        .get(`/listings/${round.id}/summary.csv`)
+        .get(`/listings/${stall.id}/summary.csv`)
         .buffer(true)
         .parse((res, done) => {
           const chunks: Buffer[] = [];
@@ -278,12 +298,12 @@ describe('Seller tools: summary, order editing, reopening', () => {
       const a = await order(minh, '1');
       const b = await order(lan, '1');
       await seller.post(`/orders/${b.id}/deliver`).expect(200);
-      const elsewhere = await publish(roundBody({ title: 'Đợt khác nữa' }));
+      const elsewhere = await publish(stallBody({ title: 'Quầy khác nữa' }));
       const foreign = await order(minh, '1', {}, elsewhere);
       const unknown = randomUUID();
 
       const response = await seller
-        .post(`/listings/${round.id}/orders/bulk`)
+        .post(`/listings/${stall.id}/orders/bulk`)
         .send({
           action: 'deliver',
           orderIds: [a.id, b.id, foreign.id, unknown, a.id],
@@ -310,7 +330,7 @@ describe('Seller tools: summary, order editing, reopening', () => {
       const b = await order(lan, '2');
 
       await seller
-        .post(`/listings/${round.id}/orders/bulk`)
+        .post(`/listings/${stall.id}/orders/bulk`)
         .send({ action: 'confirm_payment', orderIds: [a.id, b.id] })
         .expect(200);
 
@@ -322,7 +342,7 @@ describe('Seller tools: summary, order editing, reopening', () => {
 
     it('validates the request', async () => {
       const post = (body: object) =>
-        seller.post(`/listings/${round.id}/orders/bulk`).send(body);
+        seller.post(`/listings/${stall.id}/orders/bulk`).send(body);
 
       await post({ action: 'refund', orderIds: [randomUUID()] }).expect(400);
       await post({ action: 'deliver', orderIds: [] }).expect(400);
@@ -334,9 +354,20 @@ describe('Seller tools: summary, order editing, reopening', () => {
     });
   });
 
+  // Until orders hold several products of a round, a pre-order has one line
+  // and is edited by its quantity. The multi-line scenarios and the summary
+  // of a round live in test/campaign-orders.e2e-spec.ts.
   describe('PATCH /orders/:id', () => {
+    let campaign: TestCampaign;
+    let round: Listing;
+
+    beforeEach(async () => {
+      campaign = await openRound();
+      round = itemOf(campaign);
+    });
+
     it('changes the quantity and details, and recomputes the total', async () => {
-      const placed = await order(minh, '1');
+      const placed = await order(minh, '1', {}, round);
 
       const response = await edit(minh, placed.id, '2.5', {
         deliveryLocation: 'Tầng 9',
@@ -350,22 +381,30 @@ describe('Seller tools: summary, order editing, reopening', () => {
         note: 'Giao buổi chiều',
         lines: [{ title: 'Cam sành tuần 41', quantity: 2.5, lineTotal: 87500 }],
       });
-      expect((await summary()).totals).toMatchObject({
-        orderCount: 1,
-        quantity: 2.5,
+      const reread = await seller.get(`/orders/${placed.id}`).expect(200);
+      expect(reread.body).toMatchObject({
         totalAmount: 87500,
+        campaign: { id: campaign.id },
+        listing: { id: round.id, title: 'Cam sành tuần 41' },
       });
     });
 
     it('keeps the price the order was placed at', async () => {
-      const placed = await order(minh, '1');
+      const placed = await order(minh, '1', {}, round);
       await seller
-        .patch(`/listings/${round.id}`)
+        .patch(`/campaigns/${campaign.id}`)
         .send(
-          roundBody({
-            orderDeadline: round.orderDeadline,
-            deliveryDate: round.deliveryDate,
-            unitPrice: 40000,
+          campaignBody({
+            title: campaign.title,
+            acceptsPrepaidQr: true,
+            items: [
+              itemBody({
+                id: round.id,
+                title: 'Cam sành loại một',
+                unit: 'kg',
+                unitPrice: 40000,
+              }),
+            ],
           }),
         )
         .expect(200);
@@ -373,13 +412,22 @@ describe('Seller tools: summary, order editing, reopening', () => {
       const response = await edit(minh, placed.id, '2').expect(200);
 
       expect((response.body as Order).lines).toEqual([
-        expect.objectContaining({ unitPrice: 35000, quantity: 2 }),
+        expect.objectContaining({
+          title: 'Cam sành tuần 41',
+          unitPrice: 35000,
+          quantity: 2,
+        }),
       ]);
       expect((response.body as Order).totalAmount).toBe(70000);
     });
 
     it('updates the QR amount when a QR order changes', async () => {
-      const placed = await order(minh, '1', { paymentMethod: 'prepaid_qr' });
+      const placed = await order(
+        minh,
+        '1',
+        { paymentMethod: 'prepaid_qr' },
+        round,
+      );
       expect(placed.qr?.amount).toBe(35000);
 
       const response = await edit(minh, placed.id, '3', {
@@ -394,7 +442,7 @@ describe('Seller tools: summary, order editing, reopening', () => {
       ['kg finer than 0.1', '1.25', 422],
       ['no quantity at all', undefined, 400],
     ])('rejects %s', async (_label, quantity, status) => {
-      const placed = await order(minh, '1');
+      const placed = await order(minh, '1', {}, round);
 
       await edit(minh, placed.id, quantity as string).expect(status);
 
@@ -405,8 +453,39 @@ describe('Seller tools: summary, order editing, reopening', () => {
     const refusal = (response: { body: unknown }) =>
       response.body as { code: string; details: { reason: string } };
 
+    it('still works while the product is no longer on sale', async () => {
+      const placed = await order(minh, '1', {}, round);
+      await seller
+        .patch(`/campaigns/${campaign.id}`)
+        .send(
+          campaignBody({
+            title: campaign.title,
+            acceptsPrepaidQr: true,
+            items: [
+              itemBody({
+                id: round.id,
+                title: round.title,
+                unit: 'kg',
+                unitPrice: 35000,
+                selling: false,
+              }),
+            ],
+          }),
+        )
+        .expect(200);
+
+      const response = await edit(minh, placed.id, '2').expect(200);
+
+      expect((response.body as Order).totalAmount).toBe(70000);
+    });
+
     it('is refused once the payment has been reported', async () => {
-      const placed = await order(minh, '1', { paymentMethod: 'prepaid_qr' });
+      const placed = await order(
+        minh,
+        '1',
+        { paymentMethod: 'prepaid_qr' },
+        round,
+      );
       await minh.post(`/orders/${placed.id}/report-payment`).expect(200);
 
       const body = refusal(await edit(minh, placed.id, '2').expect(409));
@@ -417,12 +496,12 @@ describe('Seller tools: summary, order editing, reopening', () => {
       });
     });
 
-    it('is refused after the deadline and after the listing is closed', async () => {
-      const placed = await order(minh, '1');
-      const closedRound = await publish(roundBody({ title: 'Đợt sẽ đóng' }));
-      const onClosed = await order(lan, '1', {}, closedRound);
-      await seller.post(`/listings/${closedRound.id}/close`).expect(200);
-      await expire();
+    it('is refused after the deadline and after the round is closed', async () => {
+      const placed = await order(minh, '1', {}, round);
+      const closedRound = await openRound('Cam sẽ đóng');
+      const onClosed = await order(lan, '1', {}, itemOf(closedRound));
+      await seller.post(`/campaigns/${closedRound.id}/close`).expect(200);
+      await expire(campaign);
 
       expect(
         refusal(await edit(minh, placed.id, '2').expect(409)),
@@ -433,7 +512,7 @@ describe('Seller tools: summary, order editing, reopening', () => {
     });
 
     it('is refused for a cancelled order and for an in-stock order', async () => {
-      const cancelled = await order(minh, '1');
+      const cancelled = await order(minh, '1', {}, round);
       await minh.post(`/orders/${cancelled.id}/cancel`).send({}).expect(200);
       const stock = await speaker();
       const inStock = await order(lan, '1', {}, stock);
@@ -447,133 +526,13 @@ describe('Seller tools: summary, order editing, reopening', () => {
     });
 
     it('is only for the buyer', async () => {
-      const placed = await order(minh, '1');
+      const placed = await order(minh, '1', {}, round);
 
       await edit(seller, placed.id, '2').expect(403);
       await edit(lan, placed.id, '2').expect(404);
     });
   });
 
-  describe('POST /listings/:id/reopen', () => {
-    const uploadPhoto = async (listing: Listing) => {
-      const photo = await sharp({
-        create: { width: 40, height: 30, channels: 3, background: '#2b62b2' },
-      })
-        .jpeg()
-        .toBuffer();
-      await seller
-        .post(`/listings/${listing.id}/images`)
-        .attach('file', photo, 'anh.jpg')
-        .expect(201);
-    };
-
-    it('copies a finished round into a new draft with dates one week on', async () => {
-      const withCombo = await publish(
-        roundBody({
-          title: 'Cam sành có combo',
-          combos: [{ quantity: '5', price: 160000 }],
-        }),
-      );
-      await uploadPhoto(withCombo);
-      await order(minh, '1', {}, withCombo);
-      await seller.post(`/listings/${withCombo.id}/close`).expect(200);
-
-      const response = await seller
-        .post(`/listings/${withCombo.id}/reopen`)
-        .expect(201);
-      const next = response.body as Listing;
-
-      expect(next.id).not.toBe(withCombo.id);
-      expect(next).toMatchObject({
-        title: 'Cam sành có combo',
-        status: 'draft',
-        mode: 'preorder',
-        reopenedFromId: withCombo.id,
-        orderCount: 0,
-        acceptsPrepaidQr: true,
-        unit: 'kg',
-        unitPrice: 35000,
-        stockQuantity: null,
-        combos: [{ quantity: '5', price: 160000 }],
-      });
-      // The original deadline was still ahead, so it is kept as the suggestion.
-      expect(new Date(next.orderDeadline).getTime()).toBeGreaterThan(
-        Date.now(),
-      );
-      expect(next.deliveryDate >= next.orderDeadline.slice(0, 10)).toBe(true);
-      await seller.post(`/listings/${next.id}/publish`).expect(200);
-    });
-
-    it('moves an expired round forward in whole weeks', async () => {
-      await expire();
-
-      const next = (
-        await seller.post(`/listings/${round.id}/reopen`).expect(201)
-      ).body as Listing;
-
-      const weeks =
-        (new Date(next.orderDeadline).getTime() - (Date.now() - 60_000)) /
-        (7 * 86_400_000);
-      expect(Math.abs(weeks - Math.round(weeks))).toBeLessThan(0.001);
-      expect(new Date(next.orderDeadline).getTime()).toBeGreaterThan(
-        Date.now(),
-      );
-    });
-
-    it('gives the new round its own copies of the photos', async () => {
-      await uploadPhoto(round);
-      await seller.post(`/listings/${round.id}/close`).expect(200);
-
-      const next = (
-        await seller.post(`/listings/${round.id}/reopen`).expect(201)
-      ).body as Listing;
-      const original = (await seller.get(`/listings/${round.id}`).expect(200))
-        .body as Listing;
-
-      expect(next.images).toHaveLength(1);
-      expect(next.images[0].url).not.toBe(original.images[0].url);
-      await seller
-        .delete(`/listings/${next.id}/images/${next.images[0].id}`)
-        .expect(204);
-      await seller
-        .get(original.images[0].url.replace(/^\/api/, ''))
-        .expect(200);
-    });
-
-    it('leaves the finished round and its orders untouched', async () => {
-      const placed = await order(minh, '2');
-      await seller.post(`/listings/${round.id}/close`).expect(200);
-
-      await seller.post(`/listings/${round.id}/reopen`).expect(201);
-
-      expect((await summary()).totals).toMatchObject({
-        orderCount: 1,
-        totalAmount: 70000,
-      });
-      const source = await seller.get(`/listings/${round.id}`).expect(200);
-      expect(source.body).toMatchObject({ status: 'closed', orderCount: 1 });
-      await minh.get(`/orders/${placed.id}`).expect(200);
-    });
-
-    it('refuses a round that is still open, a draft and an in-stock listing', async () => {
-      const draft = (
-        await seller.post('/listings').send(roundBody()).expect(201)
-      ).body as Listing;
-      const stock = await speaker();
-      await seller.post(`/listings/${stock.id}/close`).expect(200);
-
-      for (const id of [round.id, draft.id, stock.id]) {
-        const response = await seller
-          .post(`/listings/${id}/reopen`)
-          .expect(409);
-        expect(response.body).toMatchObject({ code: 'INVALID_LISTING_STATE' });
-      }
-    });
-
-    it('is only for the seller', async () => {
-      await seller.post(`/listings/${round.id}/close`).expect(200);
-
-      await minh.post(`/listings/${round.id}/reopen`).expect(403);
-    });
-  });
+  // Reopening a finished round is an action on the round; its scenarios
+  // belong to test/campaigns.e2e-spec.ts.
 });

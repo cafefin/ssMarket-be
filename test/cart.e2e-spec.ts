@@ -6,11 +6,18 @@ import type { GoogleIdentity } from '../src/modules/auth/auth.types.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
+import {
+  campaignBody,
+  itemBody,
+  publishCampaign,
+  type TestCampaign,
+} from './utils/market.js';
 
 type Listing = { id: string; stockQuantity: number | null };
 type PreviewOrder = {
   key: string;
   isPreorder: boolean;
+  campaign: { id: string; orderDeadline: string; deliveryDate: string } | null;
   totalAmount: number;
   listTotal: number;
   paymentMethods: string[];
@@ -56,20 +63,18 @@ describe('Cart and checkout', () => {
       ...product,
       ...overrides,
     });
-  const fruit = (agent: TestAgent) =>
-    open(agent, {
-      mode: 'preorder',
-      title: 'Hoa quả tuần này',
-      categoryId: 2,
-      acceptsPrepaidQr: false,
-      acceptsPayOnDelivery: true,
-      orderDeadline: new Date(Date.now() + 3 * 86_400_000).toISOString(),
-      deliveryDate: new Date(Date.now() + 5 * 86_400_000)
-        .toISOString()
-        .slice(0, 10),
-      unit: 'kg',
-      unitPrice: 35000,
-    });
+  /** A round of two products: oranges by the kg and pomelos by the piece. */
+  const fruit = (agent: TestAgent): Promise<TestCampaign> =>
+    publishCampaign(
+      agent,
+      campaignBody({
+        title: 'Hoa quả tuần này',
+        items: [
+          itemBody({ title: 'Cam sành', unit: 'kg', unitPrice: 35000 }),
+          itemBody({ title: 'Bưởi da xanh', unit: 'cái', unitPrice: 40000 }),
+        ],
+      }),
+    );
   const add = (listingId: string, quantity: string) =>
     buyer.put(`/cart/lines/${listingId}`).send({ quantity });
   const stockOf = async (listing: Listing, agent: TestAgent) =>
@@ -142,6 +147,33 @@ describe('Cart and checkout', () => {
       expect((await buyer.get('/cart/count').expect(200)).body.count).toBe(1);
     });
 
+    it('shows the round of a pre-order line, and a problem once the round ends', async () => {
+      const round = await fruit(sellerA);
+      await add(round.items[0].id, '1.5').expect(200);
+
+      const lineOf = async () =>
+        (await buyer.get('/cart').expect(200)).body.groups[0].lines[0];
+      expect(await lineOf()).toMatchObject({
+        listingId: round.items[0].id,
+        mode: 'preorder',
+        stockQuantity: null,
+        lineTotal: 52500,
+        problem: null,
+        campaign: {
+          id: round.id,
+          title: 'Hoa quả tuần này',
+          orderDeadline: round.orderDeadline,
+          deliveryDate: round.deliveryDate,
+        },
+      });
+
+      await sellerA.post(`/campaigns/${round.id}/close`).expect(200);
+
+      expect(await lineOf()).toMatchObject({ problem: 'LISTING_NOT_OPEN' });
+      const refused = await add(round.items[1].id, '1').expect(409);
+      expect(refused.body.code).toBe('LISTING_NOT_OPEN');
+    });
+
     it('refuses own goods, closed listings and bad quantities', async () => {
       const mine = await gadget(buyer, 'Đồ của tôi', {
         unitPrice: 50000,
@@ -200,6 +232,8 @@ describe('Cart and checkout', () => {
 
   describe('checkout', () => {
     it('previews one order per seller and one per pre-order round', async () => {
+      const sellerAId = (await sellerA.get('/users/me').expect(200)).body.id;
+      const sellerBId = (await sellerB.get('/users/me').expect(200)).body.id;
       const speaker = await gadget(sellerA, 'Loa bluetooth', {
         unitPrice: 500000,
         stockQuantity: '3',
@@ -210,7 +244,8 @@ describe('Cart and checkout', () => {
         { unitPrice: 30000, stockQuantity: '9' },
         { acceptsPrepaidQr: false },
       );
-      const oranges = await fruit(sellerA);
+      const round = await fruit(sellerA);
+      const [oranges, pomelos] = round.items;
       const mouse = await gadget(sellerB, 'Chuột không dây', {
         unitPrice: 200000,
         stockQuantity: '2',
@@ -224,6 +259,7 @@ describe('Cart and checkout', () => {
             { listingId: cable.id, quantity: '2' },
             { listingId: oranges.id, quantity: '1.5' },
             { listingId: mouse.id, quantity: '1' },
+            { listingId: pomelos.id, quantity: '1' },
           ],
         })
         .expect(201);
@@ -233,8 +269,28 @@ describe('Cart and checkout', () => {
         orders.map((order) => [order.isPreorder, order.totalAmount]),
       ).toEqual([
         [false, 560000],
-        [true, 52500],
+        [true, 92500],
         [false, 200000],
+      ]);
+      // Both products of the round share one order, keyed by the round.
+      expect(orders.map((order) => order.key)).toEqual([
+        `seller:${sellerAId}`,
+        `campaign:${round.id}`,
+        `seller:${sellerBId}`,
+      ]);
+      expect(orders[1].lines.map((line) => line.listingId)).toEqual([
+        oranges.id,
+        pomelos.id,
+      ]);
+      expect(orders.map((order) => order.campaign)).toEqual([
+        null,
+        {
+          id: round.id,
+          title: 'Hoa quả tuần này',
+          orderDeadline: round.orderDeadline,
+          deliveryDate: round.deliveryDate,
+        },
+        null,
       ]);
       // The cable only takes pay-on-delivery, so the seller's order does too;
       // seller B has no bank details, so no QR either.

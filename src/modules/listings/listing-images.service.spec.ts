@@ -107,6 +107,33 @@ describe('ListingImagesService', () => {
       );
     });
 
+    it('takes an image for a product of a round, even one not on sale', async () => {
+      listings.findByIdWithRelations.mockResolvedValue({
+        id: LISTING,
+        sellerId: SELLER,
+        status: ListingStatus.Closed,
+        campaign: { status: 'open' },
+      });
+
+      await expect(service.add(SELLER, LISTING, photo)).resolves.toMatchObject({
+        id: 'image-1',
+      });
+    });
+
+    it('refuses a product of a closed round', async () => {
+      listings.findByIdWithRelations.mockResolvedValue({
+        id: LISTING,
+        sellerId: SELLER,
+        status: ListingStatus.Open,
+        campaign: { status: 'closed' },
+      });
+
+      await expect(codeOf(service.add(SELLER, LISTING, photo))).resolves.toBe(
+        'INVALID_LISTING_STATE',
+      );
+      expect(storage.put).not.toHaveBeenCalled();
+    });
+
     it('refuses a sixth image', async () => {
       images.findByListing.mockResolvedValue(
         Array.from({ length: 5 }, (_, sortOrder) => ({ sortOrder })),

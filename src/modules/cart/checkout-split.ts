@@ -1,4 +1,4 @@
-import { ListingMode } from '../listings/listings.constants.js';
+import type { ListingMode } from '../listings/listings.constants.js';
 import { PaymentMethod } from '../orders/orders.constants.js';
 
 /** What the split needs to know about one line being bought. */
@@ -6,13 +6,15 @@ export interface SplitLine {
   listingId: string;
   sellerId: string;
   mode: ListingMode;
+  /** The pre-order round of the product; null for in-stock goods. */
+  campaignId: string | null;
   /** The payment methods this listing accepts right now. */
   paymentMethods: PaymentMethod[];
 }
 
 /** One order a checkout will create. */
 export interface PlannedOrder {
-  /** Stable for the same selection: `seller:<id>` or `listing:<id>`. */
+  /** Stable for the same selection: `campaign:<id>`, `seller:<id>` or `listing:<id>`. */
   key: string;
   sellerId: string;
   listingIds: string[];
@@ -31,8 +33,8 @@ function common(sets: PaymentMethod[][]): PaymentMethod[] {
 /**
  * Splits a selection into orders, in the order lines were given:
  *
- * - each pre-order listing is its own order (its own round, deadline,
- *   delivery date and summary);
+ * - the products of one pre-order round share one order (one deadline, one
+ *   delivery date, one set of payment terms), never split further;
  * - a seller's in-stock lines share one order, when their listings accept a
  *   common payment method; otherwise each listing is its own order.
  */
@@ -41,10 +43,9 @@ export function splitIntoOrders(
 ): PlannedOrder[] {
   const groups = new Map<string, SplitLine[]>();
   for (const line of lines) {
-    const key =
-      line.mode === ListingMode.Preorder
-        ? `listing:${line.listingId}`
-        : `seller:${line.sellerId}`;
+    const key = line.campaignId
+      ? `campaign:${line.campaignId}`
+      : `seller:${line.sellerId}`;
     groups.set(key, [...(groups.get(key) ?? []), line]);
   }
 
@@ -62,7 +63,7 @@ export function splitIntoOrders(
         (listingLines) => listingLines[0].paymentMethods,
       ),
     );
-    if (shared.length > 0) {
+    if (shared.length > 0 || grouped[0].campaignId) {
       orders.push({
         key,
         sellerId: grouped[0].sellerId,

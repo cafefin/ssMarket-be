@@ -10,7 +10,10 @@ import {
   type Choice,
   checkout,
   inStockBody,
-  preorderBody,
+  campaignBody,
+  itemBody,
+  itemOf,
+  publishCampaign,
   publish,
   type TestListing,
 } from './utils/market.js';
@@ -56,8 +59,31 @@ describe('Orders API', () => {
 
   const inStock = (overrides: object = {}) =>
     publish(seller, inStockBody(overrides));
-  const preorder = (overrides: object = {}) =>
-    publish(seller, preorderBody(overrides));
+  /**
+   * The one product (35,000 đ per kg) of a new open round that takes QR and
+   * pay on delivery.
+   */
+  const preorder = async (): Promise<TestListing> =>
+    itemOf(
+      await publishCampaign(
+        seller,
+        campaignBody({
+          acceptsPrepaidQr: true,
+          items: [
+            itemBody({
+              title: 'Cam sành tuần này',
+              unit: 'kg',
+              unitPrice: 35000,
+            }),
+          ],
+        }),
+      ),
+    );
+  const expire = (round: TestListing) =>
+    dataSource.query(
+      `UPDATE campaigns SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
+      [round.campaign?.id],
+    );
 
   const place = (
     agent: TestAgent,
@@ -359,10 +385,7 @@ describe('Orders API', () => {
       expect(closed.body).toMatchObject({ code: 'LISTING_NOT_OPEN' });
 
       const round = await preorder();
-      await dataSource.query(
-        `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
-        [round.id],
-      );
+      await expire(round);
       const expired = await place(buyer, round, '1').expect(409);
       expect(expired.body).toMatchObject({ code: 'LISTING_NOT_OPEN' });
     });
@@ -681,10 +704,7 @@ describe('Orders API', () => {
     it('does not let the buyer cancel a pre-order after its deadline', async () => {
       const round = await preorder();
       const placed = await order(round, '1');
-      await dataSource.query(
-        `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
-        [round.id],
-      );
+      await expire(round);
 
       await act(buyer, placed.id, 'cancel').expect(409);
       await act(seller, placed.id, 'cancel', {
@@ -741,7 +761,7 @@ describe('Orders API', () => {
         .orderCount;
     const listCount = async (listing: TestListing) =>
       (
-        (await other.get('/listings').expect(200)).body as {
+        (await other.get('/listings?mode=preorder').expect(200)).body as {
           items: Array<Counted & { id: string }>;
         }
       ).items.find((candidate) => candidate.id === listing.id)?.orderCount;

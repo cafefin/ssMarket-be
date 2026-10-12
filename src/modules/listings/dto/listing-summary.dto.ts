@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { CategoryResponseDto } from '../../categories/dto/category-response.dto.js';
 import { ListingCondition, ListingMode } from '../listings.constants.js';
+import { ListingCampaignDto } from './listing-campaign.dto.js';
 import { ListingSellerDto } from './listing-response.dto.js';
 
 export class ListingSummaryDto {
@@ -51,11 +52,12 @@ export class ListingSummaryDto {
   @ApiProperty({ type: Number, nullable: true, example: 99 })
   conditionPercent!: number | null;
 
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
-  orderDeadline!: string | null;
-
-  @ApiProperty({ type: String, format: 'date', nullable: true })
-  deliveryDate!: string | null;
+  @ApiProperty({
+    type: ListingCampaignDto,
+    nullable: true,
+    description: 'The pre-order round of the product; null for in-stock goods',
+  })
+  campaign!: ListingCampaignDto | null;
 
   @ApiProperty({ type: String, format: 'date-time' })
   publishedAt!: string;

@@ -1,14 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { type EntityManager, Repository } from 'typeorm';
+import { type EntityManager, IsNull, Repository } from 'typeorm';
 import type { Tx } from '../../database/transaction.js';
 import { ListingCombo } from './listing-combo.entity.js';
 import type { ListingCursor } from './listing-cursor.js';
 import { Listing } from './listing.entity.js';
 import {
-  ListingSort,
   type ListingCondition,
-  type ListingMode,
+  ListingMode,
   type ListingStatus,
 } from './listings.constants.js';
 
@@ -20,10 +19,9 @@ export interface ListingFields {
   description: string;
   mode: ListingMode;
   status: ListingStatus;
-  acceptsPrepaidQr: boolean;
-  acceptsPayOnDelivery: boolean;
-  orderDeadline: Date | null;
-  deliveryDate: string | null;
+  /** Null for a product of a round, whose terms are the round's. */
+  acceptsPrepaidQr: boolean | null;
+  acceptsPayOnDelivery: boolean | null;
   searchText: string;
   condition: ListingCondition | null;
   conditionPercent: number | null;
@@ -32,8 +30,9 @@ export interface ListingFields {
   stockQuantity: string | null;
   publishedAt: Date | null;
   closedAt: Date | null;
-  /** The listing this one was reopened from, if any. */
-  reopenedFromId?: string | null;
+  /** The round a pre-order product belongs to. */
+  campaignId?: string | null;
+  sortOrder?: number;
 }
 
 export interface ComboFields {
@@ -42,11 +41,14 @@ export interface ComboFields {
 }
 
 export interface OpenListingSearch {
-  /** A value produced by toTsQuery, or null to browse newest first. */
+  /** A value produced by toTsQuery, or null to browse. */
   tsQuery: string | null;
   categoryId: number | null;
-  mode: ListingMode | null;
-  sort: ListingSort;
+  /**
+   * `in_stock`: goods that can still be bought, newest first. `preorder`:
+   * products of open rounds, closing soonest first.
+   */
+  mode: ListingMode;
   sellerId: string | null;
   /** Bounds on the unit price, integer VND. */
   minPrice: number | null;
@@ -63,8 +65,12 @@ export interface OpenListingRow {
   id: string;
   title: string;
   mode: ListingMode;
+  /** The round of a pre-order product; all four are null for in-stock goods. */
+  campaign_id: string | null;
+  campaign_title: string | null;
   order_deadline: Date | null;
   delivery_date: string | null;
+  sort_order: number;
   published_at: Date;
   category_id: number;
   category_slug: string;
@@ -91,6 +97,7 @@ const RELATIONS = {
   category: true,
   combos: true,
   images: true,
+  campaign: true,
 };
 
 @Injectable()
@@ -120,9 +127,10 @@ export class ListingsRepository {
     });
   }
 
+  /** The seller's in-stock listings; products of rounds are read through their round. */
   findBySeller(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.repository.find({
-      where: { sellerId, ...(status ? { status } : {}) },
+      where: { sellerId, campaignId: IsNull(), ...(status ? { status } : {}) },
       relations: RELATIONS,
       order: { createdAt: 'DESC', images: { sortOrder: 'ASC' } },
     });
@@ -165,22 +173,20 @@ export class ListingsRepository {
   searchOpen(search: OpenListingSearch): Promise<OpenListingRow[]> {
     const params: unknown[] = [search.now];
     const bind = (value: unknown): string => `$${params.push(value)}`;
+    const preorder = search.mode === ListingMode.Preorder;
 
     const where = [
       `l.status = 'open'`,
-      `(l.order_deadline IS NULL OR l.order_deadline > $1)`,
+      `(l.campaign_id IS NULL OR (cp.status = 'open' AND cp.order_deadline > $1))`,
+      `l.mode = ${bind(search.mode)}::listings_mode_enum`,
     ];
-    if (search.categoryId !== null) {
-      where.push(`l.category_id = ${bind(search.categoryId)}`);
-    }
-    if (search.mode !== null) {
-      where.push(`l.mode = ${bind(search.mode)}::listings_mode_enum`);
-    }
-    if (search.mode === 'in_stock') {
+    if (!preorder) {
       // "In stock" means something can still be bought.
       where.push('l.stock_quantity > 0');
     }
-
+    if (search.categoryId !== null) {
+      where.push(`l.category_id = ${bind(search.categoryId)}`);
+    }
     if (search.sellerId !== null) {
       where.push(`l.seller_id = ${bind(search.sellerId)}::uuid`);
     }
@@ -196,24 +202,25 @@ export class ListingsRepository {
 
     let orderBy = ['l.published_at DESC', 'l.id DESC'];
     let offset = '';
-    if (search.sort === ListingSort.Deadline) {
-      // The open condition above already requires a future deadline for
-      // these rows; the predicate is repeated so the planner can use the
-      // partial index IDX_listings_open_deadline.
-      where.push('l.order_deadline > $1');
-      where.push(`l.mode = 'preorder'`);
-      orderBy = ['l.order_deadline ASC', 'l.id ASC'];
-      if (search.cursor?.kind === 'deadline') {
-        where.push(
-          `(l.order_deadline, l.id) > (${bind(search.cursor.orderDeadline)}::timestamptz, ${bind(search.cursor.id)}::uuid)`,
-        );
-      }
-    } else if (search.tsQuery !== null) {
+    if (search.tsQuery !== null) {
       const tsQuery = `to_tsquery('simple', ${bind(search.tsQuery)})`;
       where.push(`l.search_vector @@ ${tsQuery}`);
       orderBy.unshift(`ts_rank(l.search_vector, ${tsQuery}) DESC`);
       if (search.cursor?.kind === 'ranked') {
         offset = `OFFSET ${bind(search.cursor.offset)}`;
+      }
+    } else if (preorder) {
+      orderBy = [
+        'cp.order_deadline ASC',
+        'cp.id ASC',
+        'l.sort_order ASC',
+        'l.id ASC',
+      ];
+      if (search.cursor?.kind === 'deadline') {
+        const { orderDeadline, campaignId, sortOrder, id } = search.cursor;
+        where.push(
+          `(cp.order_deadline, cp.id, l.sort_order, l.id) > (${bind(orderDeadline)}::timestamptz, ${bind(campaignId)}::uuid, ${bind(sortOrder)}::smallint, ${bind(id)}::uuid)`,
+        );
       }
     } else if (search.cursor?.kind === 'recent') {
       where.push(
@@ -224,9 +231,10 @@ export class ListingsRepository {
     return this.repository.query(
       `
       SELECT
-        l.id, l.title, l.mode, l.order_deadline,
-        to_char(l.delivery_date, 'YYYY-MM-DD') AS delivery_date,
-        l.published_at,
+        l.id, l.title, l.mode,
+        cp.id AS campaign_id, cp.title AS campaign_title, cp.order_deadline,
+        to_char(cp.delivery_date, 'YYYY-MM-DD') AS delivery_date,
+        l.sort_order, l.published_at,
         c.id AS category_id, c.slug AS category_slug, c.name AS category_name,
         c.name_en AS category_name_en, c.is_perishable AS category_is_perishable,
         l.condition, l.condition_percent,
@@ -241,6 +249,7 @@ export class ListingsRepository {
       FROM listings l
       JOIN categories c ON c.id = l.category_id
       JOIN users u ON u.id = l.seller_id
+      LEFT JOIN campaigns cp ON cp.id = l.campaign_id
       LEFT JOIN LATERAL (
         SELECT storage_key FROM listing_images
         WHERE listing_id = l.id ORDER BY sort_order LIMIT 1

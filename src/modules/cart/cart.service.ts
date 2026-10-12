@@ -4,7 +4,8 @@ import {
   combosOf,
   ListingSellerDto,
 } from '../listings/dto/listing-response.dto.js';
-import { isListingOpen } from '../listings/listing-rules.js';
+import { ListingCampaignDto } from '../listings/dto/listing-campaign.dto.js';
+import { isListingOpen, paymentTermsOf } from '../listings/listing-rules.js';
 import type { Listing } from '../listings/listing.entity.js';
 import { ListingMode } from '../listings/listings.constants.js';
 import { ListingsService } from '../listings/listings.service.js';
@@ -176,15 +177,11 @@ export class CartService {
             listTotal: lineTotal(listing.unitPrice, quantity),
           };
         });
-        const isPreorder = first.mode === ListingMode.Preorder;
         return {
           key: planned.key,
           seller: ListingSellerDto.from(first.seller),
-          isPreorder,
-          orderDeadline: isPreorder
-            ? (first.orderDeadline?.toISOString() ?? null)
-            : null,
-          deliveryDate: isPreorder ? first.deliveryDate : null,
+          isPreorder: first.mode === ListingMode.Preorder,
+          campaign: campaignOf(first),
           lines: priced,
           totalAmount: priced.reduce((sum, line) => sum + line.lineTotal, 0),
           listTotal: priced.reduce((sum, line) => sum + line.listTotal, 0),
@@ -328,17 +325,19 @@ export class CartService {
         listingId: listing.id,
         sellerId: listing.sellerId,
         mode: listing.mode,
+        campaignId: listing.campaignId,
         paymentMethods: this.methodsOf(listing),
       })),
     );
   }
 
   private methodsOf(listing: Listing): PaymentMethod[] {
+    const terms = paymentTermsOf(listing);
     const methods: PaymentMethod[] = [];
-    if (listing.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)) {
+    if (terms.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)) {
       methods.push(PaymentMethod.PrepaidQr);
     }
-    if (listing.acceptsPayOnDelivery) {
+    if (terms.acceptsPayOnDelivery) {
       methods.push(PaymentMethod.PayOnDelivery);
     }
     return methods;
@@ -364,7 +363,7 @@ export class CartService {
       stockQuantity:
         listing.stockQuantity === null ? null : Number(listing.stockQuantity),
       thumbnailUrl: image ? mediaUrl(thumbnailKey(image.storageKey)) : null,
-      orderDeadline: listing.orderDeadline?.toISOString() ?? null,
+      campaign: campaignOf(listing),
       lineTotal: lineTotalWithCombos(
         listing.unitPrice,
         combos,
@@ -374,6 +373,11 @@ export class CartService {
       problem,
     };
   }
+}
+
+/** The round of a pre-order product, for display. */
+function campaignOf(listing: Listing): ListingCampaignDto | null {
+  return listing.campaign ? ListingCampaignDto.from(listing.campaign) : null;
 }
 
 /** "2.500" from PostgreSQL numeric -> "2.5". */

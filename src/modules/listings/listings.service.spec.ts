@@ -12,11 +12,9 @@ import { Listing } from './listing.entity.js';
 import {
   ListingCondition,
   ListingMode,
-  ListingSort,
   ListingStatus,
 } from './listings.constants.js';
 import { decodeCursor, encodeCursor } from './listing-cursor.js';
-import type { ListingImagesService } from './listing-images.service.js';
 import type { ListingsRepository } from './listings.repository.js';
 import { ListingsService } from './listings.service.js';
 
@@ -31,8 +29,6 @@ function input(overrides: Partial<ListingInput> = {}): ListingInput {
     description: 'Còn mới',
     acceptsPrepaidQr: false,
     acceptsPayOnDelivery: true,
-    orderDeadline: null,
-    deliveryDate: null,
     condition: ListingCondition.Good,
     unit: 'cái',
     unitPrice: 500_000,
@@ -50,8 +46,24 @@ function stored(overrides: Partial<Listing> = {}): Listing {
     status: ListingStatus.Draft,
     acceptsPrepaidQr: false,
     acceptsPayOnDelivery: true,
-    orderDeadline: null,
-    deliveryDate: null,
+    campaignId: null,
+    campaign: null,
+    ...overrides,
+  });
+}
+
+/** A product of a pre-order round, as the repository loads it. */
+function item(
+  campaign: { status: 'draft' | 'open' | 'closed'; orderDeadline: Date },
+  overrides: Partial<Listing> = {},
+): Listing {
+  return stored({
+    mode: ListingMode.Preorder,
+    status: ListingStatus.Open,
+    acceptsPrepaidQr: null,
+    acceptsPayOnDelivery: null,
+    campaignId: 'campaign-1',
+    campaign: campaign as Listing['campaign'],
     ...overrides,
   });
 }
@@ -77,7 +89,6 @@ describe('ListingsService', () => {
   const users = { getById: vi.fn(), hasBankProfile: vi.fn() };
   const categories = { findById: vi.fn() };
   const cache = { bumpVersion: vi.fn() };
-  const images = { copyAll: vi.fn() };
   let service: ListingsService;
 
   beforeEach(() => {
@@ -93,7 +104,6 @@ describe('ListingsService', () => {
       users as unknown as UsersService,
       categories as unknown as CategoriesService,
       cache as unknown as CacheService,
-      images as unknown as ListingImagesService,
     );
   });
 
@@ -127,6 +137,20 @@ describe('ListingsService', () => {
       ).rejects.toThrow(
         'title must be 5-120 characters; unit price must be a whole number from 1000 to 1000000000',
       );
+      expect(repository.insert).not.toHaveBeenCalled();
+    });
+
+    it('refuses a pre-order: those are created as a round', async () => {
+      await expect(
+        service.create(
+          SELLER,
+          input({
+            mode: ListingMode.Preorder,
+            condition: null,
+            stockQuantity: null,
+          }),
+        ),
+      ).rejects.toThrow('pre-orders are created as a round');
       expect(repository.insert).not.toHaveBeenCalled();
     });
 
@@ -230,13 +254,47 @@ describe('ListingsService', () => {
     });
 
     it('refuses to change the mode', async () => {
+      await expect(
+        service.update(
+          SELLER,
+          'listing-1',
+          input({ mode: ListingMode.Preorder }),
+        ),
+      ).rejects.toThrow('The mode of a listing cannot be changed');
+    });
+  });
+
+  describe('a product of a pre-order round', () => {
+    const future = new Date('2026-10-06T03:00:00Z');
+
+    it.each<[string, () => Promise<unknown>]>([
+      ['edited', () => service.update(SELLER, 'listing-1', input())],
+      ['published', () => service.publish(SELLER, 'listing-1')],
+      ['closed', () => service.close(SELLER, 'listing-1')],
+    ])('cannot be %s through the listing', async (_label, act) => {
       repository.findByIdWithRelations.mockResolvedValue(
-        stored({ mode: ListingMode.Preorder }),
+        item({ status: 'open', orderDeadline: future }),
       );
 
-      await expect(
-        service.update(SELLER, 'listing-1', input()),
-      ).rejects.toThrow('The mode of a listing cannot be changed');
+      const error = await act().catch((reason: unknown) => reason);
+
+      expect(error).toBeInstanceOf(DomainException);
+      expect((error as DomainException).code).toBe('INVALID_LISTING_STATE');
+      expect((error as DomainException).message).toBe(
+        'Change this product through its pre-order round',
+      );
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(cache.bumpVersion).not.toHaveBeenCalled();
+    });
+
+    it('is still 403 for someone else', async () => {
+      repository.findByIdWithRelations.mockResolvedValue(
+        item({ status: 'open', orderDeadline: future }),
+      );
+
+      await expect(service.close(OTHER, 'listing-1')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
     });
   });
 
@@ -261,30 +319,6 @@ describe('ListingsService', () => {
         ).resolves.toBe('INVALID_LISTING_STATE');
       },
     );
-
-    it.each([
-      ['in the past', new Date('2026-10-05T02:59:59Z')],
-      ['exactly now', new Date('2026-10-05T03:00:00Z')],
-    ])('refuses a pre-order whose deadline is %s', async (_label, deadline) => {
-      repository.findByIdWithRelations.mockResolvedValue(
-        stored({ mode: ListingMode.Preorder, orderDeadline: deadline }),
-      );
-
-      await expect(service.publish(SELLER, 'listing-1')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
-    });
-
-    it('publishes a pre-order with a future deadline', async () => {
-      repository.findByIdWithRelations.mockResolvedValue(
-        stored({
-          mode: ListingMode.Preorder,
-          orderDeadline: new Date('2026-10-06T03:00:00Z'),
-        }),
-      );
-
-      await expect(service.publish(SELLER, 'listing-1')).resolves.toBeDefined();
-    });
 
     it('re-checks the bank profile when the listing accepts QR', async () => {
       repository.findByIdWithRelations.mockResolvedValue(
@@ -357,19 +391,38 @@ describe('ListingsService', () => {
       ).resolves.toBeDefined();
     });
 
-    it('hides an open pre-order after its deadline', async () => {
+    it('shows a product of an open round to everyone', async () => {
       repository.findByIdWithRelations.mockResolvedValue(
-        stored({
-          status: ListingStatus.Open,
-          mode: ListingMode.Preorder,
-          orderDeadline: new Date('2026-10-05T02:00:00Z'),
+        item({
+          status: 'open',
+          orderDeadline: new Date('2026-10-05T04:00:00Z'),
         }),
       );
 
       await expect(
         service.getForViewer(OTHER, 'listing-1'),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      ).resolves.toBeDefined();
     });
+
+    it.each([
+      ['after its deadline', 'open', new Date('2026-10-05T02:00:00Z')],
+      ['once it is closed', 'closed', new Date('2026-10-05T04:00:00Z')],
+      ['while it is a draft', 'draft', new Date('2026-10-05T04:00:00Z')],
+    ] as const)(
+      'hides a product of a round %s',
+      async (_label, status, orderDeadline) => {
+        repository.findByIdWithRelations.mockResolvedValue(
+          item({ status, orderDeadline }),
+        );
+
+        await expect(
+          service.getForViewer(OTHER, 'listing-1'),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        await expect(
+          service.getForViewer(SELLER, 'listing-1'),
+        ).resolves.toBeDefined();
+      },
+    );
   });
 
   it('lists the seller’s listings with an optional status filter', async () => {
@@ -391,12 +444,16 @@ describe('ListingsService', () => {
     const search = { searchOpen: vi.fn() };
     let searching: ListingsService;
 
-    const row = (id: string, deadline: Date | null) => ({
+    const CAMPAIGN = '7d1f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a22';
+    const row = (id: string, deadline: Date | null, sortOrder = 0) => ({
       id,
       title: 'Cam sành',
       mode: deadline ? ListingMode.Preorder : ListingMode.InStock,
+      campaign_id: deadline ? CAMPAIGN : null,
+      campaign_title: deadline ? 'Hoa quả tuần 41' : null,
       order_deadline: deadline,
-      delivery_date: null,
+      delivery_date: deadline ? '2026-10-12' : null,
+      sort_order: sortOrder,
       published_at: new Date('2026-10-05T03:00:00Z'),
       category_id: 1,
       category_slug: 'do-cu',
@@ -424,7 +481,6 @@ describe('ListingsService', () => {
         users as unknown as UsersService,
         categories as unknown as CategoriesService,
         cacheStore as unknown as CacheService,
-        images as unknown as ListingImagesService,
       );
     });
 
@@ -451,58 +507,100 @@ describe('ListingsService', () => {
       expect(page.items[0].unitPrice).toBe(100000);
     });
 
-    it('passes the default sort and no seller to the repository', async () => {
+    it('lists in-stock goods of every seller by default', async () => {
       search.searchOpen.mockResolvedValue([]);
 
       await searching.search({});
 
       expect(search.searchOpen).toHaveBeenCalledWith(
-        expect.objectContaining({ sort: ListingSort.Recent, sellerId: null }),
+        expect.objectContaining({
+          mode: ListingMode.InStock,
+          sellerId: null,
+          tsQuery: null,
+        }),
       );
     });
 
-    it('passes the seller and deadline sort through', async () => {
+    it('passes the seller and the mode through', async () => {
       search.searchOpen.mockResolvedValue([]);
 
-      await searching.search({ sort: ListingSort.Deadline, seller: SELLER });
+      await searching.search({ mode: ListingMode.Preorder, seller: SELLER });
 
       expect(search.searchOpen).toHaveBeenCalledWith(
         expect.objectContaining({
-          sort: ListingSort.Deadline,
+          mode: ListingMode.Preorder,
           sellerId: SELLER,
         }),
       );
     });
 
-    it('rejects sort=deadline combined with a keyword', async () => {
-      await expect(
-        searching.search({ sort: ListingSort.Deadline, q: 'cam' }),
-      ).rejects.toThrow(BadRequestException);
+    it('has no round on in-stock goods and the round on its products', async () => {
+      const deadline = new Date('2026-10-09T10:00:00.000Z');
+      search.searchOpen.mockResolvedValueOnce([row('listing-1', null)]);
+      search.searchOpen.mockResolvedValueOnce([row('listing-2', deadline)]);
+
+      const inStock = await searching.search({});
+      const preorder = await searching.search({ mode: ListingMode.Preorder });
+
+      expect(inStock.items[0].campaign).toBeNull();
+      expect(preorder.items[0].campaign).toEqual({
+        id: CAMPAIGN,
+        title: 'Hoa quả tuần 41',
+        orderDeadline: '2026-10-09T10:00:00.000Z',
+        deliveryDate: '2026-10-12',
+      });
+    });
+
+    const recent = encodeCursor({
+      kind: 'recent',
+      publishedAt: '2026-10-05T03:00:00.000Z',
+      id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
+    });
+    const byDeadline = encodeCursor({
+      kind: 'deadline',
+      orderDeadline: '2026-10-09T10:00:00.000Z',
+      campaignId: CAMPAIGN,
+      sortOrder: 0,
+      id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
+    });
+
+    it.each([
+      ['a recent cursor on pre-orders', { mode: ListingMode.Preorder }, recent],
+      ['a deadline cursor on in-stock goods', {}, byDeadline],
+      [
+        'a deadline cursor on a pre-order keyword search',
+        { mode: ListingMode.Preorder, q: 'cam' },
+        byDeadline,
+      ],
+    ])('rejects %s', async (_label, params, cursor) => {
+      await expect(searching.search({ ...params, cursor })).rejects.toThrow(
+        BadRequestException,
+      );
       expect(search.searchOpen).not.toHaveBeenCalled();
     });
 
-    it('rejects sort=deadline combined with mode=in_stock', async () => {
-      await expect(
-        searching.search({
-          sort: ListingSort.Deadline,
-          mode: ListingMode.InStock,
-        }),
-      ).rejects.toThrow(BadRequestException);
-    });
+    it('ends a page of pre-orders with a deadline cursor', async () => {
+      const deadline = new Date('2026-10-09T10:00:00.000Z');
+      search.searchOpen.mockResolvedValue([
+        row('0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', deadline, 2),
+        row('1b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', deadline, 3),
+      ]);
 
-    it('rejects a recent cursor on a deadline listing', async () => {
-      const cursor = encodeCursor({
-        kind: 'recent',
-        publishedAt: '2026-10-05T03:00:00.000Z',
-        id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
+      const page = await searching.search({
+        mode: ListingMode.Preorder,
+        limit: 1,
       });
 
-      await expect(
-        searching.search({ sort: ListingSort.Deadline, cursor }),
-      ).rejects.toThrow(BadRequestException);
+      expect(decodeCursor(page.nextCursor as string)).toEqual({
+        kind: 'deadline',
+        orderDeadline: '2026-10-09T10:00:00.000Z',
+        campaignId: CAMPAIGN,
+        sortOrder: 2,
+        id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
+      });
     });
 
-    it('ends a deadline page with a deadline cursor', async () => {
+    it('pages a pre-order keyword search by offset', async () => {
       const deadline = new Date('2026-10-09T10:00:00.000Z');
       search.searchOpen.mockResolvedValue([
         row('0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', deadline),
@@ -510,13 +608,28 @@ describe('ListingsService', () => {
       ]);
 
       const page = await searching.search({
-        sort: ListingSort.Deadline,
+        mode: ListingMode.Preorder,
+        q: 'cam',
         limit: 1,
       });
 
       expect(decodeCursor(page.nextCursor as string)).toEqual({
-        kind: 'deadline',
-        orderDeadline: '2026-10-09T10:00:00.000Z',
+        kind: 'ranked',
+        offset: 1,
+      });
+    });
+
+    it('ends a page of in-stock goods with a recent cursor', async () => {
+      search.searchOpen.mockResolvedValue([
+        row('0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', null),
+        row('1b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11', null),
+      ]);
+
+      const page = await searching.search({ limit: 1 });
+
+      expect(decodeCursor(page.nextCursor as string)).toEqual({
+        kind: 'recent',
+        publishedAt: '2026-10-05T03:00:00.000Z',
         id: '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11',
       });
     });

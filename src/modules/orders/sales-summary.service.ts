@@ -26,7 +26,7 @@ export class SalesSummaryService {
     private readonly listings: ListingsService,
   ) {}
 
-  /** Who ordered what on one listing: the table that replaces the spreadsheet. */
+  /** Who ordered what on one in-stock listing: the table that replaces the spreadsheet. */
   async getSummary(
     sellerId: string,
     listingId: string,
@@ -60,8 +60,6 @@ export class SalesSummaryService {
         id: listing.id,
         title: listing.title,
         unit: listing.unit,
-        orderDeadline: listing.orderDeadline?.toISOString() ?? null,
-        deliveryDate: listing.deliveryDate,
       },
       rows: orders.map((order) => ({
         orderId: order.id,
@@ -134,7 +132,8 @@ export class SalesSummaryService {
     listingId: string,
   ): Promise<Listing> {
     const listing = await this.listings.findById(listingId);
-    if (!listing) {
+    // A product of a round has no summary of its own; the round has one.
+    if (!listing || listing.campaignId) {
       throw new NotFoundException('Listing not found');
     }
     if (listing.sellerId !== sellerId) {

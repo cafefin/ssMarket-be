@@ -14,8 +14,8 @@ import {
 
 export interface NewOrder {
   code: string;
-  /** Null for an in-stock order; see Order.listingId. */
-  listingId: string | null;
+  /** Null for an in-stock order; see Order.campaignId. */
+  campaignId: string | null;
   buyerId: string;
   sellerId: string;
   isPreorder: boolean;
@@ -85,7 +85,7 @@ const RELATIONS = {
   lines: { listing: true },
   buyer: true,
   seller: true,
-  listing: true,
+  campaign: true,
 };
 const LINE_ORDER = { lines: { sortOrder: 'ASC' as const } };
 
@@ -103,14 +103,14 @@ export class OrdersRepository {
     });
   }
 
-  /** The buyer's live order on a pre-order listing, if any. */
+  /** The buyer's live order in a pre-order round, if any. */
   findActivePreorder(
-    listingId: string,
+    campaignId: string,
     buyerId: string,
   ): Promise<Order | null> {
     return this.repository.findOne({
       where: {
-        listingId,
+        campaignId,
         buyerId,
         isPreorder: true,
         fulfillmentStatus: Not(FulfillmentStatus.Cancelled),

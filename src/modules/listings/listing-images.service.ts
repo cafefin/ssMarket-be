@@ -122,7 +122,12 @@ export class ListingImagesService {
     if (listing.sellerId !== sellerId) {
       throw new ForbiddenException('You can only change your own listings');
     }
-    if (listing.status === ListingStatus.Closed) {
+    // A product of a round stays editable while it is not on sale; it is the
+    // round that ends.
+    const closed = listing.campaign
+      ? listing.campaign.status === 'closed'
+      : listing.status === ListingStatus.Closed;
+    if (closed) {
       throw new DomainException(
         409,
         'INVALID_LISTING_STATE',

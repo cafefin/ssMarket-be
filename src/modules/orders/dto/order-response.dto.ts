@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { ListingCampaignDto } from '../../listings/dto/listing-campaign.dto.js';
 import { ComboDto } from '../../listings/dto/listing-response.dto.js';
 import type { User } from '../../users/user.entity.js';
 import type { OrderLine } from '../order-line.entity.js';
@@ -31,12 +32,6 @@ export class OrderListingDto {
 
   @ApiProperty()
   title!: string;
-
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
-  orderDeadline!: string | null;
-
-  @ApiProperty({ type: String, format: 'date', nullable: true })
-  deliveryDate!: string | null;
 }
 
 export class OrderLineDto {
@@ -115,10 +110,16 @@ export class OrderDetailDto {
 
   @ApiProperty({
     type: OrderListingDto,
-    description:
-      'The pre-order round, or for an in-stock order the listing of its first line',
+    description: 'The listing of the first line, as a label for the order',
   })
   listing!: OrderListingDto;
+
+  @ApiProperty({
+    type: ListingCampaignDto,
+    nullable: true,
+    description: 'The pre-order round; null for an in-stock order',
+  })
+  campaign!: ListingCampaignDto | null;
 
   @ApiProperty({ description: 'How many listings the lines come from' })
   listingCount!: number;
@@ -183,15 +184,12 @@ export class OrderDetailDto {
     const dto = new OrderDetailDto();
     dto.id = order.id;
     dto.code = order.code;
-    // A pre-order has its round; an in-stock order shows its first line's
-    // listing here, and every line names its own.
-    const listing = order.listing ?? order.lines[0].listing;
-    dto.listing = {
-      id: listing.id,
-      title: listing.title,
-      orderDeadline: listing.orderDeadline?.toISOString() ?? null,
-      deliveryDate: listing.deliveryDate,
-    };
+    // Only a label: every line names its own listing.
+    const listing = order.lines[0].listing;
+    dto.listing = { id: listing.id, title: listing.title };
+    dto.campaign = order.campaign
+      ? ListingCampaignDto.from(order.campaign)
+      : null;
     dto.listingCount = new Set(order.lines.map((line) => line.listingId)).size;
     dto.buyer = OrderPersonDto.from(order.buyer);
     dto.seller = OrderPersonDto.from(order.seller);

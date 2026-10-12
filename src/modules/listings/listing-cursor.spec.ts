@@ -3,6 +3,7 @@ import { decodeCursor, encodeCursor } from './listing-cursor.js';
 
 describe('listing cursors', () => {
   const id = '0b0f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a11';
+  const campaignId = '7d1f6f3e-3a55-4d0c-9f0a-0d3d0f9c1a22';
 
   it('round-trips a recent cursor and a ranked cursor', () => {
     const recent = {
@@ -25,14 +26,29 @@ describe('listing cursors', () => {
     const cursor = {
       kind: 'deadline' as const,
       orderDeadline: '2026-10-09T10:00:00.000Z',
+      campaignId,
+      sortOrder: 3,
       id,
     };
     expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
   });
 
+  const deadline = {
+    kind: 'deadline',
+    orderDeadline: '2026-10-09T10:00:00.000Z',
+    campaignId,
+    sortOrder: 0,
+    id,
+  };
   it.each([
-    { kind: 'deadline', orderDeadline: 'tomorrow', id },
-    { kind: 'deadline', orderDeadline: '2026-10-09T10:00:00.000Z', id: 'x' },
+    { ...deadline, orderDeadline: 'tomorrow' },
+    { ...deadline, id: 'x' },
+    { ...deadline, campaignId: 'x' },
+    { ...deadline, campaignId: undefined },
+    { ...deadline, sortOrder: -1 },
+    { ...deadline, sortOrder: 1.5 },
+    { ...deadline, sortOrder: 32768 },
+    { ...deadline, sortOrder: '0' },
     { kind: 'deadline', id },
   ])('rejects a malformed deadline cursor %j', (value) => {
     const raw = Buffer.from(JSON.stringify(value)).toString('base64url');

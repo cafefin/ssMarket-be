@@ -12,6 +12,7 @@ export type TestListing = {
   combos: Array<{ quantity: string; price: number }>;
   seller: { id: string; handle: string };
   orderCount: number;
+  campaign: { id: string } | null;
 };
 
 /** A valid in-stock product body; categories 1-6 are seeded. */
@@ -28,21 +29,79 @@ export const inStockBody = (overrides: object = {}) => ({
   ...overrides,
 });
 
-/** A valid pre-order body: the deadline is in three days. */
-export const preorderBody = (overrides: object = {}) => ({
-  mode: 'preorder',
-  title: 'Cam sành tuần này',
+/** The fields of a pre-order round that the integration tests read. */
+export type TestCampaign = {
+  id: string;
+  title: string;
+  status: string;
+  isOpen: boolean;
+  orderDeadline: string;
+  deliveryDate: string;
+  seller: { id: string; handle: string };
+  items: Array<{
+    id: string;
+    title: string;
+    unit: string;
+    unitPrice: number;
+    selling: boolean;
+    orderCount: number;
+    removable: boolean;
+  }>;
+};
+
+/** A valid product of a round. */
+export const itemBody = (overrides: object = {}) => ({
+  title: 'Bánh bao chay',
+  unit: 'cái',
+  unitPrice: 15000,
+  ...overrides,
+});
+
+/** A valid round: deadline in three days, delivery in five, two products. */
+export const campaignBody = (overrides: object = {}) => ({
+  title: 'Bánh bao tuần này',
   categoryId: 2,
-  acceptsPrepaidQr: true,
+  acceptsPrepaidQr: false,
   acceptsPayOnDelivery: true,
-  unit: 'kg',
-  unitPrice: 35000,
   orderDeadline: new Date(Date.now() + 3 * 86_400_000).toISOString(),
   deliveryDate: new Date(Date.now() + 5 * 86_400_000)
     .toISOString()
     .slice(0, 10),
+  items: [
+    itemBody(),
+    itemBody({ title: 'Bánh bao nhân thịt', unitPrice: 18000 }),
+  ],
   ...overrides,
 });
+
+/** Creates and publishes a round as `seller`. */
+export async function publishCampaign(
+  seller: TestAgent,
+  body: object = campaignBody(),
+): Promise<TestCampaign> {
+  const created = await seller.post('/campaigns').send(body).expect(201);
+  const published = await seller
+    .post(`/campaigns/${(created.body as TestCampaign).id}/publish`)
+    .expect(200);
+  return published.body as TestCampaign;
+}
+
+/** A campaign item in the shape `checkout` takes. */
+export function itemOf(campaign: TestCampaign, index = 0): TestListing {
+  const item = campaign.items[index];
+  return {
+    id: item.id,
+    title: item.title,
+    mode: 'preorder',
+    unit: item.unit,
+    unitPrice: item.unitPrice,
+    stockQuantity: null,
+    combos: [],
+    seller: campaign.seller,
+    orderCount: item.orderCount,
+    campaign: { id: campaign.id },
+  };
+}
 
 /** Creates and publishes a listing as `seller`. */
 export async function publish(
@@ -57,8 +116,8 @@ export async function publish(
 
 /** The checkout key of the single order that buying `listing` alone creates. */
 export function orderKey(listing: TestListing): string {
-  return listing.mode === 'preorder'
-    ? `listing:${listing.id}`
+  return listing.campaign
+    ? `campaign:${listing.campaign.id}`
     : `seller:${listing.seller.id}`;
 }
 

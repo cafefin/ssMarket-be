@@ -10,11 +10,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import {
-  ListingCondition,
-  ListingMode,
-  ListingSort,
-} from '../listings.constants.js';
+import { ListingCondition, ListingMode } from '../listings.constants.js';
 
 export class ListingQueryDto {
   @ApiPropertyOptional({ description: 'Keywords, with or without diacritics' })
@@ -29,22 +25,17 @@ export class ListingQueryDto {
   @MaxLength(40)
   category?: string;
 
-  @ApiPropertyOptional({ enum: ListingMode, enumName: 'ListingMode' })
+  @ApiPropertyOptional({
+    enum: ListingMode,
+    enumName: 'ListingMode',
+    default: ListingMode.InStock,
+    description:
+      '`in_stock` lists goods that can still be bought, newest first; ' +
+      '`preorder` lists the products of open rounds, closing soonest first',
+  })
   @IsOptional()
   @IsEnum(ListingMode)
   mode?: ListingMode;
-
-  @ApiPropertyOptional({
-    enum: ListingSort,
-    enumName: 'ListingSort',
-    default: ListingSort.Recent,
-    description:
-      '`deadline` returns only pre-orders, closing soonest first; it cannot ' +
-      'be combined with `q` or `mode=in_stock`',
-  })
-  @IsOptional()
-  @IsEnum(ListingSort)
-  sort?: ListingSort;
 
   @ApiPropertyOptional({ format: 'uuid', description: 'Only this seller' })
   @IsOptional()

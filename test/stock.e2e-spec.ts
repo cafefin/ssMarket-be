@@ -5,7 +5,12 @@ import type { GoogleIdentity } from '../src/modules/auth/auth.types.js';
 import { ListingsService } from '../src/modules/listings/listings.service.js';
 import { signIn } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
-import { inStockBody, preorderBody } from './utils/market.js';
+import {
+  campaignBody,
+  inStockBody,
+  itemBody,
+  type TestCampaign,
+} from './utils/market.js';
 
 describe('Stock reservation', () => {
   const identity: { current: GoogleIdentity | null } = { current: null };
@@ -68,7 +73,11 @@ describe('Stock reservation', () => {
         stockQuantity: '5',
       }),
     );
-    unlimited = await create(preorderBody({ acceptsPrepaidQr: false }));
+    const campaign = await seller
+      .post('/campaigns')
+      .send(campaignBody({ items: [itemBody()] }))
+      .expect(201);
+    unlimited = (campaign.body as TestCampaign).items[0].id;
   });
 
   afterAll(async () => {
