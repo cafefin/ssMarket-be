@@ -820,5 +820,67 @@ describe('Campaigns API', () => {
       expect(statuses.filter((status) => status === 201)).toHaveLength(10);
       expect(statuses.filter((status) => status === 200)).toHaveLength(10);
     });
+
+    it('does not deadlock a checkout of several products against an edit that lists them in another order', async () => {
+      const campaign = await publishCampaign(
+        seller,
+        campaignBody({
+          // Many products keep both transactions busy on the same rows
+          // long enough to meet.
+          items: Array.from({ length: 12 }, (_, index) =>
+            itemBody({ title: `Bánh bao số ${index + 1}` }),
+          ),
+        }),
+      );
+      // Checkout takes the product rows in id order; the edit sends them in
+      // the opposite order, which is also the order it would write them in.
+      const reversed = sameItems(campaign).sort((a, b) =>
+        b.id.localeCompare(a.id),
+      );
+      const purchases = campaign.items.map((_, index) => ({
+        listing: itemOf(campaign, index),
+        quantity: '1',
+      }));
+      const attempts = 15;
+      const buyersPerAttempt = 3;
+      // The edits queue on the round's lock, so together they stay on the
+      // product rows for as long as the checkouts take to reach them.
+      const editsPerAttempt = 3;
+      const placed: number[] = [];
+      const edited: number[] = [];
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        // One at a time: signIn passes the identity through a shared slot.
+        const people: TestAgent[] = [];
+        for (let index = 0; index < buyersPerAttempt; index += 1) {
+          people.push(await signIn(app, identity, `buyer-${attempt}-${index}`));
+        }
+        const [edits, orders] = await Promise.all([
+          Promise.all(
+            Array.from({ length: editsPerAttempt }, (_, index) =>
+              seller.patch(`/campaigns/${campaign.id}`).send(
+                campaignBody({
+                  title: `Bánh bao đợt ${attempt}.${index}`,
+                  items: reversed,
+                }),
+              ),
+            ),
+          ),
+          Promise.all(people.map((person) => checkout(person, purchases))),
+        ]);
+        edited.push(...edits.map((edit) => edit.status));
+        placed.push(...orders.map((order) => order.status));
+      }
+      expect([...placed, ...edited].filter((status) => status >= 500)).toEqual(
+        [],
+      );
+      expect(placed.filter((status) => status === 201)).toHaveLength(
+        attempts * buyersPerAttempt,
+      );
+      expect(edited.filter((status) => status === 200)).toHaveLength(
+        attempts * editsPerAttempt,
+      );
+      // Room to report a deadlock (PostgreSQL waits a second before each)
+      // as a 500 rather than as a timeout.
+    }, 60_000);
   });
 });

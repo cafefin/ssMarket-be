@@ -243,7 +243,8 @@ export class CampaignsRepository {
 
   /**
    * One transaction: locks the campaign row, checks it is still in
-   * `expectedStatus` (CampaignStateChangedError otherwise), refuses to
+   * `expectedStatus` (CampaignStateChangedError otherwise), locks the
+   * round's item rows in id order, refuses to
    * delete items that order lines reference (CampaignItemsInUseError),
    * updates the campaign, updates/inserts items (replacing combos), deletes
    * `deleteIds`.
@@ -257,11 +258,14 @@ export class CampaignsRepository {
   ): Promise<void> {
     try {
       await this.repository.manager.transaction(async (manager) => {
-        // FOR NO KEY UPDATE serialises saves but, unlike FOR UPDATE, does
-        // not conflict with the FOR KEY SHARE that an order insert takes on
-        // this row through its foreign key. Checkout locks item rows first
-        // and the campaign row second; this save does the reverse, so a
-        // stronger lock here could deadlock with it.
+        // Lock order: the campaign row, then the round's product rows in id
+        // order. Checkout (`reserveStock`) updates the product rows it buys
+        // in id order as well, pre-orders included, and only then touches
+        // the campaign row through the foreign key of the order it inserts.
+        //
+        // FOR NO KEY UPDATE on the campaign serialises saves but, unlike FOR
+        // UPDATE, does not conflict with that FOR KEY SHARE, so the opposite
+        // order of the two tables cannot deadlock.
         const locked: Array<{ status: CampaignStatus }> = await manager.query(
           `SELECT status FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`,
           [id],
@@ -272,6 +276,15 @@ export class CampaignsRepository {
         if (locked[0].status !== expectedStatus) {
           throw new CampaignStateChangedError(false);
         }
+        // The items are written below in display order, which is the
+        // seller's to choose. Taking every row first, in id order, keeps a
+        // checkout of several products from holding one row while this save
+        // holds another.
+        await manager.query(
+          `SELECT id FROM listings WHERE campaign_id = $1
+            ORDER BY id FOR NO KEY UPDATE`,
+          [id],
+        );
         const inUse = await itemsInUse(manager, deleteIds);
         if (inUse.length > 0) {
           throw new CampaignItemsInUseError(inUse);
