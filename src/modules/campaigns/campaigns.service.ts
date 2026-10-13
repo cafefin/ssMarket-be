@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CacheService } from '../../cache/cache.service.js';
@@ -11,6 +12,7 @@ import { normalizeForSearch } from '../../common/text/normalize.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { emailHandle } from '../listings/dto/listing-response.dto.js';
 import { ListingImagesService } from '../listings/listing-images.service.js';
+import type { Listing } from '../listings/listing.entity.js';
 import {
   isCampaignOpen,
   suggestReopenDates,
@@ -64,6 +66,8 @@ export interface CampaignSearchParams {
 
 @Injectable()
 export class CampaignsService {
+  private readonly logger = new Logger(CampaignsService.name);
+
   constructor(
     private readonly campaigns: CampaignsRepository,
     private readonly users: UsersService,
@@ -112,6 +116,7 @@ export class CampaignsService {
     this.assertKnownItems(input, new Set(currentIds));
 
     const kept = new Set(input.items.map((item) => item.id));
+    const removed = campaign.items.filter((item) => !kept.has(item.id));
     const now = new Date();
     try {
       await this.campaigns.save(
@@ -120,7 +125,7 @@ export class CampaignsService {
         input.items.map((item, index) =>
           this.itemWrite(item, index, campaign.status, now),
         ),
-        currentIds.filter((itemId) => !kept.has(itemId)),
+        removed.map((item) => item.id),
         campaign.status,
       );
     } catch (error) {
@@ -135,6 +140,9 @@ export class CampaignsService {
       this.rethrowStateChange(error);
     }
 
+    // The image rows went with their products; the files go now that the
+    // save is committed.
+    await this.images.removeFiles(storageKeysOf(removed));
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
     return this.mustFind(id);
   }
@@ -193,7 +201,7 @@ export class CampaignsService {
     return this.mustFind(id);
   }
 
-  /** Deletes a draft with its products. */
+  /** Deletes a draft with its products and their photo files. */
   async remove(sellerId: string, id: string): Promise<void> {
     const campaign = await this.findOwned(sellerId, id);
     if (campaign.status !== CampaignStatus.Draft) {
@@ -204,6 +212,7 @@ export class CampaignsService {
     } catch (error) {
       this.rethrowStateChange(error);
     }
+    await this.images.removeFiles(storageKeysOf(campaign.items));
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
   }
 
@@ -336,7 +345,8 @@ export class CampaignsService {
   /**
    * Copies a finished round into a new draft: the same terms, the products
    * that were on sale (with combos and photos), and dates moved forward by
-   * whole weeks.
+   * whole weeks. All or nothing: when a photo cannot be copied the new draft
+   * is deleted again and the error surfaces.
    */
   async reopen(sellerId: string, id: string): Promise<Campaign> {
     const source = await this.findOwned(sellerId, id);
@@ -381,8 +391,14 @@ export class CampaignsService {
 
     const created = await this.mustFind(newId);
     const twins = [...created.items].sort((a, b) => a.sortOrder - b.sortOrder);
-    for (const [index, item] of kept.entries()) {
-      await this.images.copyAll(item.images ?? [], twins[index].id);
+    try {
+      for (const [index, item] of kept.entries()) {
+        await this.images.copyAll(item.images ?? [], twins[index].id);
+      }
+    } catch (error) {
+      // A draft without its photos is worse than no draft: take it back.
+      await this.discardDraft(newId);
+      throw error;
     }
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -446,6 +462,23 @@ export class CampaignsService {
       minPrice: row.min_price,
       thumbnails: row.image_keys.map((key) => mediaUrl(thumbnailKey(key))),
     };
+  }
+
+  /**
+   * Deletes a draft that `reopen` could not finish, with the photos it
+   * already got. Never throws, so the caller's error is the one that
+   * surfaces; a failure here is logged.
+   */
+  private async discardDraft(id: string): Promise<void> {
+    try {
+      const draft = await this.campaigns.findById(id);
+      await this.campaigns.delete(id, CampaignStatus.Draft);
+      await this.images.removeFiles(storageKeysOf(draft?.items ?? []));
+    } catch (error) {
+      this.logger.error(
+        `Could not delete the unfinished draft ${id}: ${String(error)}`,
+      );
+    }
   }
 
   private async mustFind(id: string): Promise<Campaign> {
@@ -580,4 +613,11 @@ export class CampaignsService {
       publishedAt: status === ListingStatus.Open ? now : null,
     };
   }
+}
+
+/** The storage keys of every photo of the given products. */
+function storageKeysOf(items: Listing[]): string[] {
+  return items.flatMap((item) =>
+    (item.images ?? []).map((image) => image.storageKey),
+  );
 }

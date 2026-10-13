@@ -1,8 +1,9 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import sharp from 'sharp';
 import type { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import type { StorageService } from '../storage/storage.service.js';
+import type { ListingImage } from './listing-image.entity.js';
 import type { ListingImagesRepository } from './listing-images.repository.js';
 import { ListingImagesService } from './listing-images.service.js';
 import { ListingStatus } from './listings.constants.js';
@@ -195,6 +196,113 @@ describe('ListingImagesService', () => {
       await expect(
         service.remove('someone-else', LISTING, 'image-1'),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  describe('removeFiles', () => {
+    it('deletes each file and its thumbnail', async () => {
+      await service.removeFiles(['listings/a/1.webp', 'listings/b/2.webp']);
+
+      expect(storage.delete.mock.calls.map(([key]) => key as string)).toEqual([
+        'listings/a/1.webp',
+        'listings/a/1_thumb.webp',
+        'listings/b/2.webp',
+        'listings/b/2_thumb.webp',
+      ]);
+    });
+
+    it('logs a file it cannot delete and goes on with the rest', async () => {
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      storage.delete.mockRejectedValueOnce(new Error('disk gone'));
+
+      await expect(
+        service.removeFiles(['listings/a/1.webp', 'listings/b/2.webp']),
+      ).resolves.toBeUndefined();
+
+      expect(storage.delete).toHaveBeenCalledTimes(4);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('listings/a/1.webp');
+    });
+  });
+
+  describe('copyAll', () => {
+    const source = [
+      { id: 'image-1', storageKey: 'listings/old/1.webp', sortOrder: 0 },
+      { id: 'image-2', storageKey: 'listings/old/2.webp', sortOrder: 1 },
+    ] as ListingImage[];
+
+    beforeEach(() => {
+      storage.get.mockResolvedValue({
+        data: Buffer.from('x'),
+        contentType: 'image/webp',
+      });
+    });
+
+    it('stores a copy of each file and records it for the target', async () => {
+      await service.copyAll(source, 'new');
+
+      expect(storage.put).toHaveBeenCalledTimes(4);
+      expect(
+        images.create.mock.calls.map(([image]) => image as object),
+      ).toEqual([
+        {
+          listingId: 'new',
+          storageKey: expect.stringMatching(
+            /^listings\/new\/[0-9a-f-]{36}\.webp$/,
+          ),
+          sortOrder: 0,
+        },
+        {
+          listingId: 'new',
+          storageKey: expect.stringMatching(
+            /^listings\/new\/[0-9a-f-]{36}\.webp$/,
+          ),
+          sortOrder: 1,
+        },
+      ]);
+    });
+
+    it('leaves out an image whose file is gone', async () => {
+      storage.get.mockResolvedValueOnce(null);
+
+      await service.copyAll(source, 'new');
+
+      expect(images.create).toHaveBeenCalledTimes(1);
+      expect(images.create.mock.calls[0][0]).toMatchObject({ sortOrder: 1 });
+    });
+
+    it('removes the files of a copy it could not finish, and fails', async () => {
+      // First image: both files and the row. Second: the thumbnail fails.
+      storage.put
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(service.copyAll(source, 'new')).rejects.toThrow('disk full');
+
+      const second = storage.put.mock.calls[2][0] as string;
+      expect(storage.delete.mock.calls.map(([key]) => key as string)).toEqual([
+        second,
+        second.replace('.webp', '_thumb.webp'),
+      ]);
+      expect(images.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes the files of an image it could not record, and fails', async () => {
+      images.create.mockRejectedValue(new Error('connection lost'));
+
+      await expect(service.copyAll(source, 'new')).rejects.toThrow(
+        'connection lost',
+      );
+
+      const first = storage.put.mock.calls[0][0] as string;
+      expect(storage.delete.mock.calls.map(([key]) => key as string)).toEqual([
+        first,
+        first.replace('.webp', '_thumb.webp'),
+      ]);
     });
   });
 });

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import type { CacheService } from '../../cache/cache.service.js';
@@ -94,6 +95,26 @@ function stored(overrides: Partial<Campaign> = {}): Campaign {
   });
 }
 
+function photos(...storageKeys: string[]): Listing['images'] {
+  return storageKeys.map((storageKey, index) => ({
+    id: `image-${index}`,
+    storageKey,
+    sortOrder: index,
+  })) as Listing['images'];
+}
+
+/** A draft whose two products have photos. */
+function storedWithPhotos(): Campaign {
+  return stored({
+    items: [
+      storedItem({
+        images: photos('listings/item-1/a.webp', 'listings/item-1/b.webp'),
+      }),
+      storedItem({ id: 'item-2', images: photos('listings/item-2/c.webp') }),
+    ],
+  });
+}
+
 async function rejection(promise: Promise<unknown>): Promise<DomainException> {
   const error = await promise.then(
     () => {
@@ -123,7 +144,7 @@ describe('CampaignsService', () => {
     getVersion: vi.fn(),
     getOrSet: vi.fn(),
   };
-  const images = { copyAll: vi.fn() };
+  const images = { copyAll: vi.fn(), removeFiles: vi.fn() };
   let service: CampaignsService;
 
   beforeEach(() => {
@@ -371,6 +392,43 @@ describe('CampaignsService', () => {
       expect(repository.save.mock.calls[0][3]).toEqual(['item-1']);
     });
 
+    it('removes the photo files of the deleted products once the save is done', async () => {
+      repository.findById.mockResolvedValue(storedWithPhotos());
+      repository.save.mockImplementation(() => {
+        expect(images.removeFiles).not.toHaveBeenCalled();
+        return Promise.resolve();
+      });
+
+      await service.update(
+        SELLER,
+        'campaign-1',
+        input({ items: [itemInput({ id: 'item-2' })] }),
+      );
+
+      expect(images.removeFiles).toHaveBeenCalledTimes(1);
+      expect(images.removeFiles).toHaveBeenCalledWith([
+        'listings/item-1/a.webp',
+        'listings/item-1/b.webp',
+      ]);
+    });
+
+    it('keeps every photo file when the save fails', async () => {
+      repository.findById.mockResolvedValue(storedWithPhotos());
+      repository.save.mockRejectedValue(
+        new CampaignItemsInUseError([{ listingId: 'item-1', title: 'Bánh' }]),
+      );
+
+      await rejection(
+        service.update(
+          SELLER,
+          'campaign-1',
+          input({ items: [itemInput({ id: 'item-2' })] }),
+        ),
+      );
+
+      expect(images.removeFiles).not.toHaveBeenCalled();
+    });
+
     it('answers CAMPAIGN_ITEM_HAS_ORDERS when a product to delete has orders', async () => {
       const items = [{ listingId: 'item-1', title: 'Bánh bao chay' }];
       repository.save.mockRejectedValue(new CampaignItemsInUseError(items));
@@ -564,6 +622,33 @@ describe('CampaignsService', () => {
         CampaignStatus.Draft,
       );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes the photo files of its products once it is deleted', async () => {
+      repository.findById.mockResolvedValue(storedWithPhotos());
+      repository.delete.mockImplementation(() => {
+        expect(images.removeFiles).not.toHaveBeenCalled();
+        return Promise.resolve();
+      });
+
+      await service.remove(SELLER, 'campaign-1');
+
+      expect(images.removeFiles).toHaveBeenCalledTimes(1);
+      expect(images.removeFiles).toHaveBeenCalledWith([
+        'listings/item-1/a.webp',
+        'listings/item-1/b.webp',
+        'listings/item-2/c.webp',
+      ]);
+    });
+
+    it('keeps every photo file when the delete fails', async () => {
+      repository.findById.mockResolvedValue(storedWithPhotos());
+      repository.delete.mockRejectedValue(new CampaignStateChangedError(false));
+
+      await rejection(service.remove(SELLER, 'campaign-1'));
+
+      expect(images.removeFiles).not.toHaveBeenCalled();
+      expect(cache.bumpVersion).not.toHaveBeenCalled();
     });
 
     it.each([CampaignStatus.Open, CampaignStatus.Closed])(
@@ -1138,6 +1223,77 @@ describe('CampaignsService', () => {
         source.items[2].images,
         'new-b',
       );
+    });
+
+    describe('when a photo cannot be copied', () => {
+      const twins = () =>
+        stored({
+          id: 'new-1',
+          items: [
+            storedItem({ id: 'new-a', sortOrder: 0 }),
+            storedItem({ id: 'new-b', sortOrder: 1 }),
+          ],
+        });
+
+      beforeEach(() => {
+        repository.insert.mockResolvedValue('new-1');
+        images.copyAll
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('disk full'));
+      });
+
+      it('deletes the new draft and the files already copied, and fails', async () => {
+        repository.findById
+          .mockResolvedValueOnce(finished())
+          .mockResolvedValueOnce(twins())
+          // Read again for the photos the first product did get.
+          .mockResolvedValueOnce(
+            stored({
+              id: 'new-1',
+              items: [
+                storedItem({
+                  id: 'new-a',
+                  images: photos('listings/new-a/x.webp'),
+                }),
+                storedItem({ id: 'new-b' }),
+              ],
+            }),
+          );
+
+        await expect(service.reopen(SELLER, 'campaign-1')).rejects.toThrow(
+          'disk full',
+        );
+
+        expect(repository.delete).toHaveBeenCalledWith(
+          'new-1',
+          CampaignStatus.Draft,
+        );
+        expect(images.removeFiles).toHaveBeenCalledWith([
+          'listings/new-a/x.webp',
+        ]);
+        expect(repository.delete.mock.invocationCallOrder[0]).toBeLessThan(
+          images.removeFiles.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('still fails with the copy error when the draft cannot be deleted', async () => {
+        const logged = vi
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+        repository.findById
+          .mockResolvedValueOnce(finished())
+          .mockResolvedValue(twins());
+        repository.delete.mockRejectedValue(new Error('connection lost'));
+
+        await expect(service.reopen(SELLER, 'campaign-1')).rejects.toThrow(
+          'disk full',
+        );
+
+        expect(logged).toHaveBeenCalledTimes(1);
+        expect(logged.mock.calls[0][0]).toContain('new-1');
+        // The rows are still there, so their files must be too.
+        expect(images.removeFiles).not.toHaveBeenCalled();
+      });
     });
   });
 

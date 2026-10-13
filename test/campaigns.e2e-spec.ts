@@ -440,6 +440,49 @@ describe('Campaigns API', () => {
     expect(late.body.code).toBe('INVALID_LISTING_STATE');
   });
 
+  it('removes the photo files of a deleted product and of a deleted draft', async () => {
+    const draft = await createDraft();
+    const photo = await sharp({
+      create: { width: 80, height: 60, channels: 3, background: '#2b62b2' },
+    })
+      .jpeg()
+      .toBuffer();
+    /** Uploads a photo and returns the API paths of the file and its thumbnail. */
+    const upload = async (itemId: string): Promise<string[]> => {
+      const response = await seller
+        .post(`/listings/${itemId}/images`)
+        .attach('file', photo, 'photo.jpg')
+        .expect(201);
+      const { url, thumbnailUrl } = response.body as {
+        url: string;
+        thumbnailUrl: string;
+      };
+      return [url, thumbnailUrl].map((path) => path.replace(/^\/api/, ''));
+    };
+    const first = await upload(draft.items[0].id);
+    const second = await upload(draft.items[1].id);
+    for (const path of [...first, ...second]) {
+      await seller.get(path).expect(200);
+    }
+
+    // Leaving the first product out of the edit deletes it.
+    await seller
+      .patch(`/campaigns/${draft.id}`)
+      .send(campaignBody({ items: sameItems(draft).slice(1) }))
+      .expect(200);
+    for (const path of first) {
+      await seller.get(path).expect(404);
+    }
+    for (const path of second) {
+      await seller.get(path).expect(200);
+    }
+
+    await seller.delete(`/campaigns/${draft.id}`).expect(204);
+    for (const path of second) {
+      await seller.get(path).expect(404);
+    }
+  });
+
   it('takes an order on a product until the deadline of the round', async () => {
     const campaign = await publishCampaign(seller);
 

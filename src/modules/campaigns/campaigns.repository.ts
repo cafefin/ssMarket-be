@@ -349,7 +349,8 @@ export class CampaignsRepository {
 
   /**
    * Deletes the campaign if it is still in `expectedStatus`; its items,
-   * their combos and images go with it. CampaignStateChangedError otherwise.
+   * their combos and image rows go with it (the image files are the
+   * service's to remove). CampaignStateChangedError otherwise.
    */
   async delete(id: string, expectedStatus: CampaignStatus): Promise<void> {
     const result = await this.repository.delete({ id, status: expectedStatus });
