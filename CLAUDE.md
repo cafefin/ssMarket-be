@@ -146,10 +146,17 @@ its products, which are rows of `listings` with `campaign_id`.
   update save the campaign and all its items in one transaction (an item with
   an `id` is changed, one without is added, one left out is removed), and
   replace the items' combos. Nothing else inserts or updates a campaign item.
+  `save` locks the campaign row, then the round's item rows **in id order**,
+  before it writes them in display order: checkout takes the same rows in id
+  order (`reserveStock`), so the two cannot deadlock.
 - Item status follows the round: `draft` while the round is a draft, `open`
   once it is published, and `closed` when the seller stops selling it
   (`selling: false`). Closing the round ends it without changing item status;
   the round decides. Only a draft round can be deleted.
+- Deleting an item or a draft round removes its `listing_images` rows by
+  cascade and **its files after the transaction commits**
+  (`ListingImagesService.removeFiles`, from `CampaignsService`). A file that
+  cannot be removed is logged and never fails the request.
 - An item that any order line references is **stopped, not deleted**: leaving
   it out of an update answers 409 `CAMPAIGN_ITEM_HAS_ORDERS` (with the items);
   `selling: false` keeps it. A stopped item stays in orders and in the summary.
@@ -159,6 +166,8 @@ its products, which are rows of `listings` with `campaign_id`.
   deadline) into a new draft: the same terms, the items that were on sale
   (combos, and photos as separate files), dates moved forward by whole weeks,
   `reopened_from_id` set. It never changes the source round or its orders.
+  All or nothing: when a photo cannot be copied, the new draft and the files
+  already copied are deleted and the error surfaces.
 - Routes: `POST/GET /campaigns`, `GET /campaigns/mine`, `GET/PATCH/DELETE
   /campaigns/:id`, `POST /campaigns/:id/publish|close|reopen`. Every write
   bumps the listings cache version; the public round page is cached.
@@ -318,6 +327,9 @@ statement for the order code.
   format from the bytes and drops EXIF. Never store an upload as received.
 - Files go through `StorageService`; do not use `fs` elsewhere. Storage keys
   must match the allowlist in `local-storage.service.ts`.
+- Whatever deletes image rows also deletes their files and thumbnails, after
+  the database change: `ListingImagesService.remove` for one image,
+  `removeFiles` for rows that went by cascade (see "Campaigns").
 - `/media/*` requires a session.
 
 ## Auth
