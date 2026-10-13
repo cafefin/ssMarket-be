@@ -380,6 +380,26 @@ describe('Orders of a pre-order round', () => {
       });
     });
 
+    it('refuses a payment method the round does not accept', async () => {
+      const cashOnly = await publishCampaign(
+        seller,
+        roundBody({ title: 'Bánh bao trả sau', acceptsPrepaidQr: false }),
+      );
+      const item = itemOf(cashOnly, 0);
+      const placed = await buy(minh, [[item, '1']]);
+
+      const response = await edit(minh, placed.id, [[item, '2']], {
+        paymentMethod: 'prepaid_qr',
+      }).expect(422);
+
+      expect(failure(response).code).toBe('PAYMENT_METHOD_NOT_ACCEPTED');
+      const unchanged = await minh.get(`/orders/${placed.id}`).expect(200);
+      expect(unchanged.body).toMatchObject({
+        totalAmount: 15000,
+        paymentMethod: 'pay_on_delivery',
+      });
+    });
+
     it('refuses products outside the round, and repeated ones', async () => {
       const placed = await buy(minh, [[a, '1']]);
       const second = await publishCampaign(

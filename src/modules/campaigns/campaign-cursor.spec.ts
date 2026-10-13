@@ -17,7 +17,10 @@ describe('campaign cursor', () => {
   it.each([
     ['garbage', '!!!'],
     ['non-JSON', Buffer.from('not json').toString('base64url')],
-    ['a non-UUID id', raw({ orderDeadline: '2026-10-16T10:00:00.000Z', id: 'x' })],
+    [
+      'a non-UUID id',
+      raw({ orderDeadline: '2026-10-16T10:00:00.000Z', id: 'x' }),
+    ],
     ['a non-ISO timestamp', raw({ orderDeadline: 'tomorrow', id })],
   ])('rejects %s', (_name, value) => {
     expect(() => decodeCampaignCursor(value)).toThrow(BadRequestException);

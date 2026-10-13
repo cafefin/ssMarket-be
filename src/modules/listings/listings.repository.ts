@@ -30,9 +30,6 @@ export interface ListingFields {
   stockQuantity: string | null;
   publishedAt: Date | null;
   closedAt: Date | null;
-  /** The round a pre-order product belongs to. */
-  campaignId?: string | null;
-  sortOrder?: number;
 }
 
 export interface ComboFields {

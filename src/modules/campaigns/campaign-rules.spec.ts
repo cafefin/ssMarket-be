@@ -4,7 +4,9 @@ import {
   validateCampaignInput,
 } from './campaign-rules.js';
 
-const item = (overrides: Partial<CampaignItemInput> = {}): CampaignItemInput => ({
+const item = (
+  overrides: Partial<CampaignItemInput> = {},
+): CampaignItemInput => ({
   id: null,
   title: 'Bánh bao chay',
   description: '',
@@ -73,10 +75,14 @@ describe('validateCampaignInput', () => {
   it('compares delivery with the deadline business date in Vietnam', () => {
     const orderDeadline = new Date('2026-10-16T17:30:00Z');
     expect(
-      validateCampaignInput(input({ orderDeadline, deliveryDate: '2026-10-16' })),
+      validateCampaignInput(
+        input({ orderDeadline, deliveryDate: '2026-10-16' }),
+      ),
     ).toEqual(['delivery date cannot be before the order deadline']);
     expect(
-      validateCampaignInput(input({ orderDeadline, deliveryDate: '2026-10-17' })),
+      validateCampaignInput(
+        input({ orderDeadline, deliveryDate: '2026-10-17' }),
+      ),
     ).toEqual([]);
   });
 
@@ -146,9 +152,7 @@ describe('validateCampaignInput', () => {
 
   it('prefixes problems of the second item with item 2', () => {
     expect(
-      validateCampaignInput(
-        input({ items: [item(), item({ title: 'X' })] }),
-      ),
+      validateCampaignInput(input({ items: [item(), item({ title: 'X' })] })),
     ).toEqual(['item 2: title must be 2-120 characters']);
   });
 });
