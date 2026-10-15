@@ -3,7 +3,7 @@ import { CategoryResponseDto } from '../../categories/dto/category-response.dto.
 import type { User } from '../../users/user.entity.js';
 import type { ListingImage } from '../listing-image.entity.js';
 import type { ListingCombo } from '../listing-combo.entity.js';
-import { isListingOpen } from '../listing-rules.js';
+import { isListingOpen, paymentTermsOf } from '../listing-rules.js';
 import type { Listing } from '../listing.entity.js';
 import {
   CONDITION_PERCENT,
@@ -12,6 +12,7 @@ import {
   ListingStatus,
 } from '../listings.constants.js';
 import { mediaUrl, thumbnailKey } from '../media-url.js';
+import { ListingCampaignDto } from './listing-campaign.dto.js';
 
 export class ListingSellerDto {
   @ApiProperty({ format: 'uuid' })
@@ -104,7 +105,8 @@ export class ListingDetailDto {
   status!: ListingStatus;
 
   @ApiProperty({
-    description: 'True while buyers can see the listing',
+    description:
+      'True while buyers can order: the listing is open and, for a product of a round, so is the round',
   })
   isOpen!: boolean;
 
@@ -120,11 +122,12 @@ export class ListingDetailDto {
   @ApiProperty()
   acceptsPayOnDelivery!: boolean;
 
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
-  orderDeadline!: string | null;
-
-  @ApiProperty({ type: String, format: 'date', nullable: true })
-  deliveryDate!: string | null;
+  @ApiProperty({
+    type: ListingCampaignDto,
+    nullable: true,
+    description: 'The pre-order round of the product; null for in-stock goods',
+  })
+  campaign!: ListingCampaignDto | null;
 
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   publishedAt!: string | null;
@@ -145,14 +148,6 @@ export class ListingDetailDto {
     description: 'The percentage of `condition`, e.g. 99',
   })
   conditionPercent!: number | null;
-
-  @ApiProperty({
-    type: String,
-    format: 'uuid',
-    nullable: true,
-    description: 'The earlier round this listing was reopened from',
-  })
-  reopenedFromId!: string | null;
 
   @ApiProperty({ example: 'cái' })
   unit!: string;
@@ -186,17 +181,18 @@ export class ListingDetailDto {
     dto.isOpen = isListingOpen(listing, now);
     dto.category = CategoryResponseDto.from(listing.category);
     dto.seller = ListingSellerDto.from(listing.seller);
-    dto.acceptsPrepaidQr = listing.acceptsPrepaidQr;
-    dto.acceptsPayOnDelivery = listing.acceptsPayOnDelivery;
-    dto.orderDeadline = listing.orderDeadline?.toISOString() ?? null;
-    dto.deliveryDate = listing.deliveryDate;
+    const terms = paymentTermsOf(listing);
+    dto.acceptsPrepaidQr = terms.acceptsPrepaidQr;
+    dto.acceptsPayOnDelivery = terms.acceptsPayOnDelivery;
+    dto.campaign = listing.campaign
+      ? ListingCampaignDto.from(listing.campaign)
+      : null;
     dto.publishedAt = listing.publishedAt?.toISOString() ?? null;
     dto.orderCount = listing.orderCount ?? 0;
     dto.condition = listing.condition ?? null;
     dto.conditionPercent = listing.condition
       ? CONDITION_PERCENT[listing.condition]
       : null;
-    dto.reopenedFromId = listing.reopenedFromId ?? null;
     dto.unit = listing.unit;
     dto.unitPrice = listing.unitPrice;
     dto.stockQuantity =

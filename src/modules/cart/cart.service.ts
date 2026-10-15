@@ -4,7 +4,8 @@ import {
   combosOf,
   ListingSellerDto,
 } from '../listings/dto/listing-response.dto.js';
-import { isListingOpen } from '../listings/listing-rules.js';
+import { ListingCampaignDto } from '../listings/dto/listing-campaign.dto.js';
+import { isListingOpen, paymentTermsOf } from '../listings/listing-rules.js';
 import type { Listing } from '../listings/listing.entity.js';
 import { ListingMode } from '../listings/listings.constants.js';
 import { ListingsService } from '../listings/listings.service.js';
@@ -95,6 +96,70 @@ export class CartService {
     quantity: string,
   ): Promise<CartDto> {
     const [listing] = await this.listings.findByIds([listingId]);
+    this.assertAddable(userId, listing, listingId, quantity);
+    if (
+      !(await this.cart.findLine(userId, listingId)) &&
+      (await this.cart.countForUser(userId)) >= CART_MAX_LINES
+    ) {
+      throw new DomainException(
+        409,
+        'CART_FULL',
+        `A cart holds at most ${CART_MAX_LINES} products`,
+      );
+    }
+    await this.cart.upsert(userId, listingId, quantity);
+    return this.get(userId);
+  }
+
+  /** Sets the quantity of every line, all or none. */
+  async setLines(
+    userId: string,
+    lines: { listingId: string; quantity: string }[],
+  ): Promise<CartDto> {
+    const ids = lines.map((line) => line.listingId);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('A product appears twice');
+    }
+    const found = new Map(
+      (await this.listings.findByIds(ids)).map((listing) => [
+        listing.id,
+        listing,
+      ]),
+    );
+    for (const line of lines) {
+      this.assertAddable(
+        userId,
+        found.get(line.listingId),
+        line.listingId,
+        line.quantity,
+      );
+    }
+    const held = new Set(
+      (await this.cart.findForUser(userId)).map((line) => line.listingId),
+    );
+    if (new Set([...held, ...ids]).size > CART_MAX_LINES) {
+      throw new DomainException(
+        409,
+        'CART_FULL',
+        `A cart holds at most ${CART_MAX_LINES} products`,
+      );
+    }
+    await this.cart.upsertMany(userId, lines);
+    return this.get(userId);
+  }
+
+  async removeLine(userId: string, listingId: string): Promise<CartDto> {
+    await this.cart.remove(userId, listingId);
+    return this.get(userId);
+  }
+
+  /** Refuses a product that cannot go in the cart in this quantity. */
+  private assertAddable(
+    userId: string,
+    listing: Listing | undefined,
+    listingId: string,
+    quantity: string,
+  ): asserts listing is Listing {
     if (!listing || !isListingOpen(listing, new Date())) {
       throw new DomainException(
         409,
@@ -131,23 +196,6 @@ export class CartService {
         },
       );
     }
-    if (
-      !(await this.cart.findLine(userId, listingId)) &&
-      (await this.cart.countForUser(userId)) >= CART_MAX_LINES
-    ) {
-      throw new DomainException(
-        409,
-        'CART_FULL',
-        `A cart holds at most ${CART_MAX_LINES} products`,
-      );
-    }
-    await this.cart.upsert(userId, listingId, quantity);
-    return this.get(userId);
-  }
-
-  async removeLine(userId: string, listingId: string): Promise<CartDto> {
-    await this.cart.remove(userId, listingId);
-    return this.get(userId);
   }
 
   /** The orders a checkout of these lines would create, priced. */
@@ -176,15 +224,11 @@ export class CartService {
             listTotal: lineTotal(listing.unitPrice, quantity),
           };
         });
-        const isPreorder = first.mode === ListingMode.Preorder;
         return {
           key: planned.key,
           seller: ListingSellerDto.from(first.seller),
-          isPreorder,
-          orderDeadline: isPreorder
-            ? (first.orderDeadline?.toISOString() ?? null)
-            : null,
-          deliveryDate: isPreorder ? first.deliveryDate : null,
+          isPreorder: first.mode === ListingMode.Preorder,
+          campaign: campaignOf(first),
           lines: priced,
           totalAmount: priced.reduce((sum, line) => sum + line.lineTotal, 0),
           listTotal: priced.reduce((sum, line) => sum + line.listTotal, 0),
@@ -328,17 +372,19 @@ export class CartService {
         listingId: listing.id,
         sellerId: listing.sellerId,
         mode: listing.mode,
+        campaignId: listing.campaignId,
         paymentMethods: this.methodsOf(listing),
       })),
     );
   }
 
   private methodsOf(listing: Listing): PaymentMethod[] {
+    const terms = paymentTermsOf(listing);
     const methods: PaymentMethod[] = [];
-    if (listing.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)) {
+    if (terms.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)) {
       methods.push(PaymentMethod.PrepaidQr);
     }
-    if (listing.acceptsPayOnDelivery) {
+    if (terms.acceptsPayOnDelivery) {
       methods.push(PaymentMethod.PayOnDelivery);
     }
     return methods;
@@ -364,7 +410,7 @@ export class CartService {
       stockQuantity:
         listing.stockQuantity === null ? null : Number(listing.stockQuantity),
       thumbnailUrl: image ? mediaUrl(thumbnailKey(image.storageKey)) : null,
-      orderDeadline: listing.orderDeadline?.toISOString() ?? null,
+      campaign: campaignOf(listing),
       lineTotal: lineTotalWithCombos(
         listing.unitPrice,
         combos,
@@ -374,6 +420,11 @@ export class CartService {
       problem,
     };
   }
+}
+
+/** The round of a pre-order product, for display. */
+function campaignOf(listing: Listing): ListingCampaignDto | null {
+  return listing.campaign ? ListingCampaignDto.from(listing.campaign) : null;
 }
 
 /** "2.500" from PostgreSQL numeric -> "2.5". */

@@ -20,11 +20,9 @@ import {
   encodeCursor,
   type ListingCursor,
 } from './listing-cursor.js';
-import { ListingImagesService } from './listing-images.service.js';
 import {
   isListingOpen,
   type ListingInput,
-  suggestReopenDates,
   validateListingInput,
 } from './listing-rules.js';
 import type { Listing } from './listing.entity.js';
@@ -34,7 +32,6 @@ import {
   LISTINGS_CACHE_NAMESPACE,
   LISTINGS_CACHE_TTL_SECONDS,
   ListingMode,
-  ListingSort,
   ListingStatus,
 } from './listings.constants.js';
 import {
@@ -51,8 +48,8 @@ import { buildSearchText } from './search-text.js';
 export interface ListingSearchParams {
   q?: string;
   category?: string;
+  /** Defaults to in-stock goods. */
   mode?: ListingMode;
-  sort?: ListingSort;
   seller?: string;
   minPrice?: number;
   maxPrice?: number;
@@ -71,7 +68,6 @@ export class ListingsService {
     private readonly users: UsersService,
     private readonly categories: CategoriesService,
     private readonly cache: CacheService,
-    private readonly images: ListingImagesService,
   ) {}
 
   async create(sellerId: string, input: ListingInput): Promise<Listing> {
@@ -99,6 +95,11 @@ export class ListingsService {
     input: ListingInput,
   ): Promise<Listing> {
     const listing = await this.findOwned(sellerId, id);
+    if (listing.campaignId) {
+      throw this.invalidState(
+        'Change this product through its pre-order round',
+      );
+    }
     if (listing.status === ListingStatus.Closed) {
       throw this.invalidState('A closed listing cannot be edited');
     }
@@ -119,18 +120,15 @@ export class ListingsService {
 
   async publish(sellerId: string, id: string): Promise<Listing> {
     const listing = await this.findOwned(sellerId, id);
+    if (listing.campaignId) {
+      throw this.invalidState(
+        'Change this product through its pre-order round',
+      );
+    }
     if (listing.status !== ListingStatus.Draft) {
       throw this.invalidState('Only a draft can be published');
     }
 
-    const now = new Date();
-    if (
-      listing.mode === ListingMode.Preorder &&
-      (listing.orderDeadline === null ||
-        listing.orderDeadline.getTime() <= now.getTime())
-    ) {
-      throw new BadRequestException('The order deadline must be in the future');
-    }
     if (listing.acceptsPrepaidQr) {
       await this.assertBankProfile(sellerId);
     }
@@ -139,7 +137,7 @@ export class ListingsService {
 
     await this.listings.update(id, {
       status: ListingStatus.Open,
-      publishedAt: now,
+      publishedAt: new Date(),
     });
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
@@ -148,6 +146,11 @@ export class ListingsService {
 
   async close(sellerId: string, id: string): Promise<Listing> {
     const listing = await this.findOwned(sellerId, id);
+    if (listing.campaignId) {
+      throw this.invalidState(
+        'Change this product through its pre-order round',
+      );
+    }
     if (listing.status !== ListingStatus.Open) {
       throw this.invalidState('Only an open listing can be closed');
     }
@@ -162,59 +165,9 @@ export class ListingsService {
   }
 
   /**
-   * Starts the next round of a finished pre-order: a new draft with the same
-   * price, combos and photos, linked to the round it came from. The source
-   * listing and its orders are left exactly as they are.
-   */
-  async reopen(sellerId: string, id: string): Promise<Listing> {
-    const source = await this.findOwned(sellerId, id);
-    if (
-      source.mode !== ListingMode.Preorder ||
-      source.orderDeadline === null ||
-      source.deliveryDate === null
-    ) {
-      throw this.invalidState('Only a pre-order listing can be reopened');
-    }
-    const now = new Date();
-    if (source.status === ListingStatus.Draft || isListingOpen(source, now)) {
-      throw this.invalidState('Only a finished round can be reopened');
-    }
-
-    const newId = await this.listings.insert(
-      {
-        sellerId,
-        mode: source.mode,
-        status: ListingStatus.Draft,
-        categoryId: source.categoryId,
-        title: source.title,
-        description: source.description,
-        acceptsPrepaidQr: source.acceptsPrepaidQr,
-        acceptsPayOnDelivery: source.acceptsPayOnDelivery,
-        condition: null,
-        conditionPercent: null,
-        unit: source.unit,
-        unitPrice: source.unitPrice,
-        stockQuantity: null,
-        ...suggestReopenDates(source.orderDeadline, source.deliveryDate, now),
-        searchText: buildSearchText(source),
-        publishedAt: null,
-        closedAt: null,
-        reopenedFromId: source.id,
-      },
-      (source.combos ?? []).map((combo) => ({
-        quantity: combo.quantity,
-        price: combo.price,
-      })),
-    );
-    await this.images.copyAll(source.images, newId);
-
-    await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
-    return this.mustFind(newId);
-  }
-
-  /**
    * The seller sees their listing in any state. Everyone else sees it only
-   * while it is open; otherwise it does not exist as far as they can tell.
+   * while it can be ordered; otherwise it does not exist as far as they can
+   * tell.
    */
   async getForViewer(viewerId: string, id: string): Promise<Listing> {
     const listing = await this.mustFind(id);
@@ -230,16 +183,8 @@ export class ListingsService {
       Math.max(params.limit ?? DEFAULT_PAGE_SIZE, 1),
       MAX_PAGE_SIZE,
     );
-    const sort = params.sort ?? ListingSort.Recent;
+    const mode = params.mode ?? ListingMode.InStock;
     const tsQuery = params.q ? toTsQuery(params.q) : null;
-    if (
-      sort === ListingSort.Deadline &&
-      (params.q !== undefined || params.mode === ListingMode.InStock)
-    ) {
-      throw new BadRequestException(
-        'sort=deadline lists pre-orders only and cannot be combined with q or mode=in_stock',
-      );
-    }
 
     if (
       params.minPrice !== undefined &&
@@ -249,12 +194,7 @@ export class ListingsService {
       throw new BadRequestException('minPrice cannot be above maxPrice');
     }
     const cursor = params.cursor ? decodeCursor(params.cursor) : null;
-    const expectedKind: ListingCursor['kind'] =
-      sort === ListingSort.Deadline
-        ? 'deadline'
-        : tsQuery === null
-          ? 'recent'
-          : 'ranked';
+    const expectedKind = cursorKind(mode, tsQuery);
     if (cursor && cursor.kind !== expectedKind) {
       throw new BadRequestException('Invalid cursor');
     }
@@ -267,7 +207,6 @@ export class ListingsService {
       }
       categoryId = category.id;
     }
-    const mode = params.mode ?? null;
     const sellerId = params.seller ?? null;
     const minPrice = params.minPrice ?? null;
     const maxPrice = params.maxPrice ?? null;
@@ -283,7 +222,6 @@ export class ListingsService {
           mode,
           cursor,
           limit,
-          sort,
           sellerId,
           minPrice,
           maxPrice,
@@ -301,7 +239,6 @@ export class ListingsService {
           tsQuery,
           categoryId,
           mode,
-          sort,
           sellerId,
           minPrice,
           maxPrice,
@@ -315,7 +252,7 @@ export class ListingsService {
           items: page.map((row) => this.toSummary(row)),
           nextCursor:
             rows.length > limit
-              ? encodeCursor(this.nextCursor(sort, tsQuery, cursor, page))
+              ? encodeCursor(this.nextCursor(mode, tsQuery, cursor, page))
               : null,
         };
       },
@@ -356,8 +293,8 @@ export class ListingsService {
     const now = new Date();
     if (
       cached &&
-      (cached.orderDeadline === null ||
-        new Date(cached.orderDeadline).getTime() > now.getTime())
+      (!cached.campaign ||
+        new Date(cached.campaign.orderDeadline).getTime() > now.getTime())
     ) {
       return cached;
     }
@@ -395,31 +332,35 @@ export class ListingsService {
     return this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
   }
 
+  /** The seller's in-stock listings. */
   listMine(sellerId: string, status?: ListingStatus): Promise<Listing[]> {
     return this.listings.findBySeller(sellerId, status);
   }
 
   private nextCursor(
-    sort: ListingSort,
+    mode: ListingMode,
     tsQuery: string | null,
     current: ListingCursor | null,
     page: OpenListingRow[],
   ): ListingCursor {
     const last = page[page.length - 1];
-    if (sort === ListingSort.Deadline) {
+    const kind = cursorKind(mode, tsQuery);
+    if (kind === 'ranked') {
+      const previous = current?.kind === 'ranked' ? current.offset : 0;
+      return { kind, offset: previous + page.length };
+    }
+    if (kind === 'deadline') {
       return {
-        kind: 'deadline',
-        // Non-null: the deadline ordering only returns pre-orders.
+        kind,
+        // Non-null: this ordering only returns products of a round.
         orderDeadline: (last.order_deadline as Date).toISOString(),
+        campaignId: last.campaign_id as string,
+        sortOrder: last.sort_order,
         id: last.id,
       };
     }
-    if (tsQuery !== null) {
-      const previous = current?.kind === 'ranked' ? current.offset : 0;
-      return { kind: 'ranked', offset: previous + page.length };
-    }
     return {
-      kind: 'recent',
+      kind,
       publishedAt: last.published_at.toISOString(),
       id: last.id,
     };
@@ -454,8 +395,15 @@ export class ListingsService {
       hasCombos: row.has_combos,
       condition: row.condition,
       conditionPercent: row.condition_percent,
-      orderDeadline: row.order_deadline?.toISOString() ?? null,
-      deliveryDate: row.delivery_date,
+      campaign:
+        row.campaign_id === null
+          ? null
+          : {
+              id: row.campaign_id,
+              title: row.campaign_title as string,
+              orderDeadline: (row.order_deadline as Date).toISOString(),
+              deliveryDate: row.delivery_date as string,
+            },
       publishedAt: row.published_at.toISOString(),
     };
   }
@@ -536,8 +484,6 @@ export class ListingsService {
       description: input.description,
       acceptsPrepaidQr: input.acceptsPrepaidQr,
       acceptsPayOnDelivery: input.acceptsPayOnDelivery,
-      orderDeadline: input.orderDeadline,
-      deliveryDate: input.deliveryDate,
       condition: input.condition,
       conditionPercent: input.condition
         ? CONDITION_PERCENT[input.condition]
@@ -555,4 +501,15 @@ export class ListingsService {
       price: combo.price,
     }));
   }
+}
+
+/** How a list pages: ranked results by offset, the rest by keyset. */
+function cursorKind(
+  mode: ListingMode,
+  tsQuery: string | null,
+): ListingCursor['kind'] {
+  if (tsQuery !== null) {
+    return 'ranked';
+  }
+  return mode === ListingMode.Preorder ? 'deadline' : 'recent';
 }

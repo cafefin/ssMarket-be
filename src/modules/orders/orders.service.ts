@@ -7,9 +7,14 @@ import {
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { TransactionRunner, type Tx } from '../../database/transaction.js';
 import { BanksService } from '../banks/banks.service.js';
-import { isListingOpen } from '../listings/listing-rules.js';
+import {
+  isCampaignOpen,
+  isListingOpen,
+  paymentTermsOf,
+} from '../listings/listing-rules.js';
 import type { Listing } from '../listings/listing.entity.js';
-import { ListingMode } from '../listings/listings.constants.js';
+import { ListingStatus } from '../listings/listings.constants.js';
+import { toThousandths } from '../listings/pricing.js';
 import { ListingsService } from '../listings/listings.service.js';
 import { buildVietQrPayload } from '../payments/vietqr.js';
 import { UsersService } from '../users/users.service.js';
@@ -51,7 +56,7 @@ import {
 
 /** A buyer's change to their pre-order. */
 export interface EditOrderInput {
-  quantity: string;
+  lines: { listingId: string; quantity: string }[];
   paymentMethod: PaymentMethod;
   deliveryLocation: string;
   note?: string | null;
@@ -80,7 +85,7 @@ export interface OrderRequest {
 interface OrderPlan {
   seller: Listing['seller'];
   /** Set for a pre-order: the round the order belongs to. */
-  preorderListingId: string | null;
+  campaignId: string | null;
   lines: NewOrderLine[];
   /** Listing id -> title, to explain a shortage. */
   titles: Map<string, string>;
@@ -175,8 +180,10 @@ export class OrdersService {
 
   /**
    * Lets a buyer change a pre-order until its deadline, like editing their
-   * row in the spreadsheet this replaces. The product keeps the price it was
-   * ordered at.
+   * row in the spreadsheet this replaces: the new list of products replaces
+   * the old one. A product already in the order keeps the price it was
+   * ordered at; a product added now is priced now. A product the seller has
+   * stopped can be kept or lowered, never added or raised.
    */
   async edit(
     buyerId: string,
@@ -202,26 +209,58 @@ export class OrdersService {
         );
       }
 
-      // Only pre-orders can be edited, and they always have their listing.
-      const listing = order.listingId
-        ? await this.listings.findById(order.listingId)
-        : null;
-      if (!listing) {
-        throw new NotFoundException('Listing not found');
+      const ids = input.lines.map((line) => line.listingId);
+      if (new Set(ids).size !== ids.length) {
+        throw new BadRequestException('A product appears twice in one order');
       }
-      this.assertPaymentMethod(listing, input.paymentMethod);
+      const found = new Map(
+        (await this.listings.findByIds(ids)).map((listing) => [
+          listing.id,
+          listing,
+        ]),
+      );
+      const ordered = new Map(
+        order.lines.map((line) => [line.listingId, line]),
+      );
+      const lines = input.lines.map((line, index) => {
+        const listing = found.get(line.listingId);
+        if (!listing || listing.campaignId !== order.campaignId) {
+          throw new BadRequestException(
+            'Every product must belong to the order’s round',
+          );
+        }
+        const previous = ordered.get(listing.id);
+        const built = this.buildLine(
+          listing,
+          line.quantity,
+          index,
+          previous && {
+            title: previous.title,
+            unit: previous.unit,
+            unitPrice: previous.unitPrice,
+            combos: previous.combos,
+          },
+        );
+        if (
+          listing.status !== ListingStatus.Open &&
+          (!previous ||
+            (toThousandths(line.quantity) ?? Infinity) >
+              (toThousandths(String(Number(previous.quantity))) ?? 0))
+        ) {
+          throw new DomainException(
+            409,
+            'LISTING_NOT_OPEN',
+            'This product is no longer on sale',
+            { listingId: listing.id },
+          );
+        }
+        return built;
+      });
+      const first = found.get(ids[0]) as Listing;
+      this.assertPaymentMethod(first, input.paymentMethod);
       const deliveryLocation = this.cleanDeliveryLocation(
         input.deliveryLocation,
       );
-      const [ordered] = order.lines;
-      const lines = [
-        this.buildLine(listing, input.quantity, 0, {
-          title: ordered.title,
-          unit: ordered.unit,
-          unitPrice: ordered.unitPrice,
-          combos: ordered.combos,
-        }),
-      ];
 
       const qr = input.paymentMethod === PaymentMethod.PrepaidQr;
       await this.orders.replaceLines(tx, id, lines, {
@@ -229,9 +268,9 @@ export class OrdersService {
         paymentMethod: input.paymentMethod,
         deliveryLocation,
         note: input.note?.trim() || null,
-        sellerBankBin: qr ? listing.seller.bankBin : null,
-        sellerBankAccountNumber: qr ? listing.seller.bankAccountNumber : null,
-        sellerBankAccountName: qr ? listing.seller.bankAccountName : null,
+        sellerBankBin: qr ? first.seller.bankBin : null,
+        sellerBankAccountNumber: qr ? first.seller.bankAccountNumber : null,
+        sellerBankAccountName: qr ? first.seller.bankAccountName : null,
       });
     });
     await this.listings.invalidateCache();
@@ -294,7 +333,7 @@ export class OrdersService {
         const now = new Date();
         assertCanCancel(order, actor, {
           now,
-          orderDeadline: order.listing?.orderDeadline ?? null,
+          orderDeadline: order.campaign?.orderDeadline ?? null,
         });
 
         await this.listings.releaseStock(
@@ -381,12 +420,10 @@ export class OrdersService {
     if (new Set(listings.map((listing) => listing.sellerId)).size > 1) {
       throw new BadRequestException('One order holds one seller’s goods');
     }
-    const preorder = listings.find(
-      (listing) => listing.mode === ListingMode.Preorder,
-    );
-    if (preorder && listings.length > 1) {
+    const campaignIds = new Set(listings.map((listing) => listing.campaignId));
+    if (campaignIds.size > 1) {
       throw new BadRequestException(
-        'A pre-order is ordered on its own, one order per round',
+        'One order holds one pre-order round, or in-stock goods only',
       );
     }
     for (const listing of listings) {
@@ -408,9 +445,10 @@ export class OrdersService {
       this.buildLine(listings[index], line.quantity, index),
     );
 
-    if (preorder) {
+    const campaignId = listings[0].campaignId;
+    if (campaignId) {
       const existing = await this.orders.findActivePreorder(
-        preorder.id,
+        campaignId,
         buyerId,
       );
       if (existing) {
@@ -420,7 +458,7 @@ export class OrdersService {
 
     return {
       seller: listings[0].seller,
-      preorderListingId: preorder?.id ?? null,
+      campaignId,
       lines,
       titles: new Map(listings.map((listing) => [listing.id, listing.title])),
       paymentMethod: request.paymentMethod,
@@ -443,10 +481,11 @@ export class OrdersService {
   }
 
   private assertPaymentMethod(listing: Listing, method: PaymentMethod): void {
+    const terms = paymentTermsOf(listing);
     const accepted =
       method === PaymentMethod.PrepaidQr
-        ? listing.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)
-        : listing.acceptsPayOnDelivery;
+        ? terms.acceptsPrepaidQr && this.users.hasBankProfile(listing.seller)
+        : terms.acceptsPayOnDelivery;
     if (!accepted) {
       throw new DomainException(
         422,
@@ -536,10 +575,10 @@ export class OrdersService {
                 tx,
                 {
                   code: generateOrderCode(),
-                  listingId: plan.preorderListingId,
+                  campaignId: plan.campaignId,
                   buyerId,
                   sellerId: plan.seller.id,
-                  isPreorder: plan.preorderListingId !== null,
+                  isPreorder: plan.campaignId !== null,
                   paymentMethod: plan.paymentMethod,
                   deliveryLocation: plan.deliveryLocation,
                   note: plan.note,
@@ -570,9 +609,9 @@ export class OrdersService {
         }
         if (error.kind === 'active-preorder') {
           for (const plan of plans) {
-            if (plan.preorderListingId) {
+            if (plan.campaignId) {
               const existing = await this.orders.findActivePreorder(
-                plan.preorderListingId,
+                plan.campaignId,
                 buyerId,
               );
               if (existing) {
@@ -661,7 +700,7 @@ function editBlocker(order: Order, now: Date): string | null {
   if (order.paymentStatus !== PaymentStatus.Unpaid) {
     return 'payment_reported';
   }
-  return order.listing && isListingOpen(order.listing, now)
+  return order.campaign && isCampaignOpen(order.campaign, now)
     ? null
     : 'deadline_passed';
 }
@@ -670,7 +709,7 @@ function alreadyOrdered(orderId: string | undefined): DomainException {
   return new DomainException(
     409,
     'ALREADY_ORDERED',
-    'You already have an order on this pre-order listing',
+    'You already have an order in this pre-order round',
     { orderId },
   );
 }

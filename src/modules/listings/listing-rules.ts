@@ -16,15 +16,12 @@ export interface ListingInput {
   description: string;
   acceptsPrepaidQr: boolean;
   acceptsPayOnDelivery: boolean;
-  orderDeadline: Date | null;
-  /** Calendar date, YYYY-MM-DD. */
-  deliveryDate: string | null;
   /** Second-hand condition; only for in-stock goods outside food categories. */
   condition: ListingCondition | null;
   unit: string;
   /** Integer VND. */
   unitPrice: number;
-  /** Decimal string with up to 3 fraction digits; null for a pre-order. */
+  /** Decimal string with up to 3 fraction digits. */
   stockQuantity: string | null;
   /** "N units for a set price"; at most three. */
   combos: Combo[];
@@ -46,7 +43,7 @@ export function businessDate(instant: Date): string {
   }).format(instant);
 }
 
-function isRealDate(value: string): boolean {
+export function isRealDate(value: string): boolean {
   if (!ISO_DATE.test(value)) {
     return false;
   }
@@ -56,7 +53,14 @@ function isRealDate(value: string): boolean {
   );
 }
 
-function productProblems(input: ListingInput): string[] {
+/** Unit, price, stock and combo rules of one product. */
+export function productProblems(input: {
+  mode: ListingMode;
+  unit: string;
+  unitPrice: number;
+  stockQuantity: string | null;
+  combos: Combo[];
+}): string[] {
   const problems: string[] = [];
 
   if (!(LISTING_UNITS as readonly string[]).includes(input.unit)) {
@@ -98,7 +102,11 @@ function productProblems(input: ListingInput): string[] {
   return problems;
 }
 
-function comboProblems(input: ListingInput): string[] {
+function comboProblems(input: {
+  unit: string;
+  unitPrice: number;
+  combos: Combo[];
+}): string[] {
   const problems: string[] = [];
   if (input.combos.length > LISTING_LIMITS.combosMax) {
     problems.push(`at most ${LISTING_LIMITS.combosMax} combos`);
@@ -141,8 +149,8 @@ function comboProblems(input: ListingInput): string[] {
 
 /**
  * Checks everything that can be decided from the input alone. Returns the
- * list of problems, empty when the input is valid. Whether the deadline is
- * still in the future is checked when publishing, not here.
+ * list of problems, empty when the input is valid. Only in-stock goods are
+ * listings of their own; pre-orders go through `validateCampaignInput`.
  */
 export function validateListingInput(
   input: ListingInput,
@@ -167,26 +175,8 @@ export function validateListingInput(
   if (!input.acceptsPrepaidQr && !input.acceptsPayOnDelivery) {
     problems.push('at least one payment method is required');
   }
-  if (input.mode === ListingMode.InStock) {
-    if (input.orderDeadline !== null || input.deliveryDate !== null) {
-      problems.push(
-        'in-stock listings do not have an order deadline or delivery date',
-      );
-    }
-  } else {
-    if (input.orderDeadline === null) {
-      problems.push('pre-order listings need an order deadline');
-    }
-    if (input.deliveryDate === null) {
-      problems.push('pre-order listings need a delivery date');
-    } else if (!isRealDate(input.deliveryDate)) {
-      problems.push('delivery date must be a valid date (YYYY-MM-DD)');
-    } else if (
-      input.orderDeadline !== null &&
-      input.deliveryDate < businessDate(input.orderDeadline)
-    ) {
-      problems.push('delivery date cannot be before the order deadline');
-    }
+  if (input.mode !== ListingMode.InStock) {
+    problems.push('pre-orders are created as a round');
   }
 
   const needsCondition =
@@ -204,16 +194,48 @@ export function validateListingInput(
   return problems;
 }
 
-/** Open means buyers can see it and, from phase 2b, order from it. */
+/** Open means buyers can order: published, not closed, deadline ahead. */
+export function isCampaignOpen(
+  campaign: { status: 'draft' | 'open' | 'closed'; orderDeadline: Date },
+  now: Date,
+): boolean {
+  return (
+    campaign.status === 'open' &&
+    campaign.orderDeadline.getTime() > now.getTime()
+  );
+}
+
+/** Open: the listing is open and, for a campaign item, so is its campaign. */
 export function isListingOpen(
-  listing: { status: ListingStatus; orderDeadline: Date | null },
+  listing: {
+    status: ListingStatus;
+    campaign?: {
+      status: 'draft' | 'open' | 'closed';
+      orderDeadline: Date;
+    } | null;
+  },
   now: Date,
 ): boolean {
   return (
     listing.status === ListingStatus.Open &&
-    (listing.orderDeadline === null ||
-      listing.orderDeadline.getTime() > now.getTime())
+    (!listing.campaign || isCampaignOpen(listing.campaign, now))
   );
+}
+
+/** The payment terms that apply: the campaign's for an item, else the listing's own. */
+export function paymentTermsOf(listing: {
+  acceptsPrepaidQr: boolean | null;
+  acceptsPayOnDelivery: boolean | null;
+  campaign?: {
+    acceptsPrepaidQr: boolean;
+    acceptsPayOnDelivery: boolean;
+  } | null;
+}): { acceptsPrepaidQr: boolean; acceptsPayOnDelivery: boolean } {
+  const source = listing.campaign ?? listing;
+  return {
+    acceptsPrepaidQr: source.acceptsPrepaidQr === true,
+    acceptsPayOnDelivery: source.acceptsPayOnDelivery === true,
+  };
 }
 
 const DAY_MS = 86_400_000;

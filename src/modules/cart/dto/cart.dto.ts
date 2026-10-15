@@ -16,6 +16,7 @@ import {
   ComboDto,
   ListingSellerDto,
 } from '../../listings/dto/listing-response.dto.js';
+import { ListingCampaignDto } from '../../listings/dto/listing-campaign.dto.js';
 import { ListingMode } from '../../listings/listings.constants.js';
 import { OrderDetailDto } from '../../orders/dto/order-response.dto.js';
 import { PaymentMethod } from '../../orders/orders.constants.js';
@@ -58,8 +59,12 @@ export class CartLineDto {
   @ApiProperty({ type: String, nullable: true })
   thumbnailUrl!: string | null;
 
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
-  orderDeadline!: string | null;
+  @ApiProperty({
+    type: ListingCampaignDto,
+    nullable: true,
+    description: 'The pre-order round of the product; null for in-stock goods',
+  })
+  campaign!: ListingCampaignDto | null;
 
   @ApiProperty({ description: 'Integer VND, with combos applied' })
   lineTotal!: number;
@@ -108,6 +113,16 @@ export class CheckoutLineDto {
   @IsString()
   @MaxLength(16)
   quantity!: string;
+}
+
+export class SetCartLinesDto {
+  @ApiProperty({ type: [CheckoutLineDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => CheckoutLineDto)
+  lines!: CheckoutLineDto[];
 }
 
 export class CheckoutPreviewRequestDto {
@@ -159,11 +174,12 @@ export class CheckoutPreviewOrderDto {
   @ApiProperty()
   isPreorder!: boolean;
 
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
-  orderDeadline!: string | null;
-
-  @ApiProperty({ type: String, format: 'date', nullable: true })
-  deliveryDate!: string | null;
+  @ApiProperty({
+    type: ListingCampaignDto,
+    nullable: true,
+    description: 'The pre-order round; null for an order of in-stock goods',
+  })
+  campaign!: ListingCampaignDto | null;
 
   @ApiProperty({ type: [CheckoutPreviewLineDto] })
   lines!: CheckoutPreviewLineDto[];

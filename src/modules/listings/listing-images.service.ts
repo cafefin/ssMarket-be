@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CacheService } from '../../cache/cache.service.js';
@@ -20,6 +21,8 @@ import { thumbnailKey } from './media-url.js';
 
 @Injectable()
 export class ListingImagesService {
+  private readonly logger = new Logger(ListingImagesService.name);
+
   constructor(
     private readonly listings: ListingsRepository,
     private readonly images: ListingImagesRepository,
@@ -83,9 +86,33 @@ export class ListingImagesService {
   }
 
   /**
+   * Deletes stored images and their thumbnails by storage key, for images
+   * whose rows are already gone (a deleted product or round). Call it after
+   * the delete has committed. It never throws: a file that cannot be removed
+   * is logged and left behind, because the request it belongs to succeeded.
+   */
+  async removeFiles(storageKeys: readonly string[]): Promise<void> {
+    for (const storageKey of storageKeys) {
+      for (const key of [storageKey, thumbnailKey(storageKey)]) {
+        try {
+          await this.storage.delete(key);
+        } catch (error) {
+          this.logger.warn(
+            `Could not delete the stored file ${key}: ${String(error)}`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
    * Gives a listing its own copies of another listing's images. The files
    * are duplicated, not shared, so removing an image from one listing can
    * never break the other.
+   *
+   * When a copy fails, the error surfaces and the files of the image being
+   * copied are removed; the images copied before it keep their rows and
+   * files, which the caller removes with the listing.
    */
   async copyAll(
     source: ListingImage[],
@@ -101,13 +128,19 @@ export class ListingImagesService {
         continue;
       }
       const storageKey = `listings/${targetListingId}/${randomUUID()}.webp`;
-      await this.storage.put(storageKey, full.data);
-      await this.storage.put(thumbnailKey(storageKey), thumbnail.data);
-      await this.images.create({
-        listingId: targetListingId,
-        storageKey,
-        sortOrder: image.sortOrder,
-      });
+      try {
+        await this.storage.put(storageKey, full.data);
+        await this.storage.put(thumbnailKey(storageKey), thumbnail.data);
+        await this.images.create({
+          listingId: targetListingId,
+          storageKey,
+          sortOrder: image.sortOrder,
+        });
+      } catch (error) {
+        // Do not leave files that no database row points to.
+        await this.removeFiles([storageKey]);
+        throw error;
+      }
     }
   }
 
@@ -122,7 +155,12 @@ export class ListingImagesService {
     if (listing.sellerId !== sellerId) {
       throw new ForbiddenException('You can only change your own listings');
     }
-    if (listing.status === ListingStatus.Closed) {
+    // A product of a round stays editable while it is not on sale; it is the
+    // round that ends.
+    const closed = listing.campaign
+      ? listing.campaign.status === 'closed'
+      : listing.status === ListingStatus.Closed;
+    if (closed) {
       throw new DomainException(
         409,
         'INVALID_LISTING_STATE',

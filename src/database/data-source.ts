@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
+import { Campaign } from '../modules/campaigns/campaign.entity.js';
 import { Category } from '../modules/categories/category.entity.js';
 import { ListingImage } from '../modules/listings/listing-image.entity.js';
 import { ListingCombo } from '../modules/listings/listing-combo.entity.js';
@@ -18,6 +19,7 @@ export default new DataSource({
   entities: [
     User,
     Category,
+    Campaign,
     Listing,
     ListingCombo,
     ListingImage,

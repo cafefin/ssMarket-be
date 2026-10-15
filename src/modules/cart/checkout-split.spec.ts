@@ -7,9 +7,12 @@ const line = (overrides: Partial<SplitLine>): SplitLine => ({
   listingId: 'l1',
   sellerId: 's1',
   mode: ListingMode.InStock,
+  campaignId: null,
   paymentMethods: both,
   ...overrides,
 });
+const item = (overrides: Partial<SplitLine>): SplitLine =>
+  line({ mode: ListingMode.Preorder, campaignId: 'c1', ...overrides });
 
 describe('splitIntoOrders', () => {
   it('puts one seller’s in-stock products into one order', () => {
@@ -40,16 +43,46 @@ describe('splitIntoOrders', () => {
     ]);
   });
 
-  it('gives every pre-order its own order', () => {
+  it('puts the products of one round into one order', () => {
+    expect(
+      splitIntoOrders([item({ listingId: 'p1' }), item({ listingId: 'p2' })]),
+    ).toEqual([
+      {
+        key: 'campaign:c1',
+        sellerId: 's1',
+        listingIds: ['p1', 'p2'],
+        paymentMethods: both,
+      },
+    ]);
+  });
+
+  it('makes one order per round, apart from the seller’s in-stock goods', () => {
     const orders = splitIntoOrders([
-      line({ listingId: 'p1', mode: ListingMode.Preorder }),
-      line({ listingId: 'p2', mode: ListingMode.Preorder }),
+      item({ listingId: 'p1', campaignId: 'c1' }),
       line({ listingId: 'l1' }),
+      item({ listingId: 'p2', campaignId: 'c2' }),
+      item({ listingId: 'p3', campaignId: 'c1' }),
     ]);
     expect(orders.map((order) => [order.key, order.listingIds])).toEqual([
-      ['listing:p1', ['p1']],
-      ['listing:p2', ['p2']],
+      ['campaign:c1', ['p1', 'p3']],
       ['seller:s1', ['l1']],
+      ['campaign:c2', ['p2']],
+    ]);
+  });
+
+  it('never splits a round, even when no payment method can be used', () => {
+    expect(
+      splitIntoOrders([
+        item({ listingId: 'p1', paymentMethods: [] }),
+        item({ listingId: 'p2', paymentMethods: [] }),
+      ]),
+    ).toEqual([
+      {
+        key: 'campaign:c1',
+        sellerId: 's1',
+        listingIds: ['p1', 'p2'],
+        paymentMethods: [],
+      },
     ]);
   });
 

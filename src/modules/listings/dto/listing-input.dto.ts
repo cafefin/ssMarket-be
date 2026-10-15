@@ -6,10 +6,8 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
-  IsISO8601,
   IsOptional,
   IsString,
-  Matches,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -38,7 +36,11 @@ export class ComboInputDto {
 }
 
 export class ListingInputDto {
-  @ApiProperty({ enum: ListingMode, enumName: 'ListingMode' })
+  @ApiProperty({
+    enum: ListingMode,
+    enumName: 'ListingMode',
+    description: 'Only `in_stock`; pre-orders are created as a round',
+  })
   @IsEnum(ListingMode)
   mode!: ListingMode;
 
@@ -66,28 +68,6 @@ export class ListingInputDto {
   acceptsPayOnDelivery!: boolean;
 
   @ApiPropertyOptional({
-    type: String,
-    format: 'date-time',
-    nullable: true,
-    description: 'Pre-order only',
-  })
-  @IsOptional()
-  @IsISO8601({ strict: true })
-  orderDeadline?: string | null;
-
-  @ApiPropertyOptional({
-    type: String,
-    format: 'date',
-    nullable: true,
-    description: 'Pre-order only, YYYY-MM-DD',
-  })
-  @IsOptional()
-  @Matches(/^\d{4}-\d{2}-\d{2}$/, {
-    message: 'deliveryDate must be YYYY-MM-DD',
-  })
-  deliveryDate?: string | null;
-
-  @ApiPropertyOptional({
     enum: ListingCondition,
     enumName: 'ListingCondition',
     nullable: true,
@@ -111,7 +91,7 @@ export class ListingInputDto {
     type: String,
     nullable: true,
     description:
-      'Decimal string, up to 3 fraction digits. Required for in-stock products, null for pre-orders.',
+      'Decimal string, up to 3 fraction digits. Required for in-stock products.',
     example: '2',
   })
   @IsOptional()
@@ -138,8 +118,6 @@ export class ListingInputDto {
       description: this.description ?? '',
       acceptsPrepaidQr: this.acceptsPrepaidQr,
       acceptsPayOnDelivery: this.acceptsPayOnDelivery,
-      orderDeadline: this.orderDeadline ? new Date(this.orderDeadline) : null,
-      deliveryDate: this.deliveryDate ?? null,
       condition: this.condition ?? null,
       unit: this.unit,
       unitPrice: this.unitPrice,

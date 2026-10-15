@@ -9,7 +9,7 @@ import {
   type Relation,
   UpdateDateColumn,
 } from 'typeorm';
-import { Listing } from '../listings/listing.entity.js';
+import { Campaign } from '../campaigns/campaign.entity.js';
 import { User } from '../users/user.entity.js';
 import { OrderLine } from './order-line.entity.js';
 import {
@@ -38,12 +38,12 @@ export class Order {
    * The pre-order round this order belongs to. Null for an in-stock order,
    * whose lines may come from several listings of the same seller.
    */
-  @Column({ name: 'listing_id', type: 'uuid', nullable: true })
-  listingId!: string | null;
+  @Column({ name: 'campaign_id', type: 'uuid', nullable: true })
+  campaignId!: string | null;
 
-  @ManyToOne(() => Listing, { nullable: true })
-  @JoinColumn({ name: 'listing_id' })
-  listing!: Relation<Listing> | null;
+  @ManyToOne(() => Campaign, { nullable: true })
+  @JoinColumn({ name: 'campaign_id' })
+  campaign!: Relation<Campaign> | null;
 
   @Column({ name: 'buyer_id', type: 'uuid' })
   buyerId!: string;

@@ -5,6 +5,12 @@ import type { GoogleIdentity } from '../src/modules/auth/auth.types.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
+import {
+  campaignBody,
+  itemBody,
+  publishCampaign,
+  type TestCampaign,
+} from './utils/market.js';
 
 const inStock = {
   mode: 'in_stock',
@@ -19,20 +25,19 @@ const inStock = {
   stockQuantity: '1',
 };
 
-const preorder = () => ({
-  mode: 'preorder',
-  title: 'Hoa quả tuần 41',
-  categoryId: 2,
-  description: 'Giao tận tầng',
-  acceptsPrepaidQr: false,
-  acceptsPayOnDelivery: true,
-  orderDeadline: new Date(Date.now() + 3 * 86_400_000).toISOString(),
-  deliveryDate: new Date(Date.now() + 5 * 86_400_000)
-    .toISOString()
-    .slice(0, 10),
-  unit: 'kg',
-  unitPrice: 35000,
-});
+/** A pre-order round with one product, "Hoa quả tuần 41" at 35,000 đ per kg. */
+const fruitRound = () =>
+  campaignBody({
+    title: 'Hoa quả theo tuần',
+    items: [
+      itemBody({
+        title: 'Hoa quả tuần 41',
+        description: 'Giao tận tầng',
+        unit: 'kg',
+        unitPrice: 35000,
+      }),
+    ],
+  });
 
 const bank = {
   bankBin: '970436',
@@ -56,6 +61,19 @@ describe('Listings API', () => {
     const id = await createDraft(body);
     await seller.post(`/listings/${id}/publish`).expect(200);
     return id;
+  };
+
+  /** Publishes the fruit round; its one product is `items[0]`. */
+  const openFruit = (): Promise<TestCampaign> =>
+    publishCampaign(seller, fruitRound());
+  const expire = async (campaign: TestCampaign): Promise<void> => {
+    await dataSource.query(
+      `UPDATE campaigns SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
+      [campaign.id],
+    );
+    // The deadline was moved behind the API's back, so drop the cached
+    // copies that still carry the old one.
+    await redis.flushdb();
   };
 
   beforeAll(async () => {
@@ -136,29 +154,13 @@ describe('Listings API', () => {
         isOpen: false,
         category: { id: 4, slug: 'dien-tu', name: 'Điện tử' },
         seller: { name: 'seller' },
-        orderDeadline: null,
-        deliveryDate: null,
+        campaign: null,
         publishedAt: null,
         unit: 'cái',
         unitPrice: 500000,
         stockQuantity: 1,
         combos: [],
         images: [],
-      });
-    });
-
-    it('creates a pre-order draft without stock', async () => {
-      const body = preorder();
-
-      const response = await seller.post('/listings').send(body).expect(201);
-
-      expect(response.body).toMatchObject({
-        mode: 'preorder',
-        deliveryDate: body.deliveryDate,
-        orderDeadline: body.orderDeadline,
-        unit: 'kg',
-        unitPrice: 35000,
-        stockQuantity: null,
       });
     });
 
@@ -170,7 +172,7 @@ describe('Listings API', () => {
           orderDeadline: new Date().toISOString(),
           deliveryDate: '2030-01-01',
         },
-        'in-stock listings do not have',
+        'property orderDeadline should not exist',
       ],
       [
         'an in-stock product without stock',
@@ -178,9 +180,15 @@ describe('Listings API', () => {
         'stock is required',
       ],
       [
-        'a pre-order without dates',
-        { ...preorder(), orderDeadline: null, deliveryDate: null },
-        'pre-order listings need an order deadline',
+        'a pre-order, which is created as a round',
+        {
+          ...inStock,
+          mode: 'preorder',
+          categoryId: 2,
+          condition: undefined,
+          stockQuantity: undefined,
+        },
+        'pre-orders are created as a round',
       ],
       [
         'no payment method',
@@ -237,16 +245,6 @@ describe('Listings API', () => {
       expect(again.body).toMatchObject({ code: 'INVALID_LISTING_STATE' });
     });
 
-    it('refuses to publish a pre-order whose deadline has passed', async () => {
-      const id = await createDraft(preorder());
-      await dataSource.query(
-        `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
-        [id],
-      );
-
-      await seller.post(`/listings/${id}/publish`).expect(400);
-    });
-
     it('closes an open listing and refuses to close a draft', async () => {
       const draft = await createDraft();
       const refused = await seller.post(`/listings/${draft}/close`).expect(409);
@@ -292,7 +290,10 @@ describe('Listings API', () => {
     it('refuses to change the mode or to edit a closed listing', async () => {
       const id = await createOpen();
 
-      await seller.patch(`/listings/${id}`).send(preorder()).expect(400);
+      await seller
+        .patch(`/listings/${id}`)
+        .send({ ...inStock, mode: 'preorder' })
+        .expect(400);
 
       await seller.post(`/listings/${id}/close`).expect(200);
       const response = await seller
@@ -323,21 +324,51 @@ describe('Listings API', () => {
       await seller.get(`/listings/${id}`).expect(200);
     });
 
-    it('hides an open pre-order once its deadline has passed', async () => {
-      const id = await createOpen(preorder());
+    it('shows a product of a round with the terms of the round', async () => {
+      const campaign = await openFruit();
+      const id = campaign.items[0].id;
+
+      const response = await buyer.get(`/listings/${id}`).expect(200);
+
+      expect(response.body).toMatchObject({
+        id,
+        title: 'Hoa quả tuần 41',
+        mode: 'preorder',
+        status: 'open',
+        isOpen: true,
+        stockQuantity: null,
+        condition: null,
+        acceptsPrepaidQr: false,
+        acceptsPayOnDelivery: true,
+        campaign: {
+          id: campaign.id,
+          title: 'Hoa quả theo tuần',
+          orderDeadline: campaign.orderDeadline,
+          deliveryDate: campaign.deliveryDate,
+        },
+      });
+    });
+
+    it('hides a product of a round once the deadline has passed', async () => {
+      const campaign = await openFruit();
+      const id = campaign.items[0].id;
       await buyer.get(`/listings/${id}`).expect(200);
 
-      await dataSource.query(
-        `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
-        [id],
-      );
-      // The deadline was moved behind the API's back, so drop the cached copy
-      // that still carries the old one.
-      await redis.flushdb();
+      await expire(campaign);
 
       await buyer.get(`/listings/${id}`).expect(404);
       const own = await seller.get(`/listings/${id}`).expect(200);
       expect(own.body).toMatchObject({ status: 'open', isOpen: false });
+    });
+
+    it('hides a product of a round once the round is closed', async () => {
+      const campaign = await openFruit();
+      const id = campaign.items[0].id;
+      await buyer.get(`/listings/${id}`).expect(200);
+
+      await seller.post(`/campaigns/${campaign.id}/close`).expect(200);
+
+      await buyer.get(`/listings/${id}`).expect(404);
     });
 
     it('lets only the seller edit, publish and close', async () => {
@@ -391,18 +422,41 @@ describe('Listings API', () => {
     const search = async (query: string) =>
       (await buyer.get(`/listings?${query}`).expect(200)).body as Page;
 
-    it('returns open listings newest first with summary fields', async () => {
-      await createOpen();
-      const fruit = await createOpen(preorder());
+    it('returns in-stock goods newest first with summary fields', async () => {
+      const older = await createOpen({ ...inStock, title: 'Bàn phím cơ cũ' });
+      const newer = await createOpen();
+      await openFruit();
 
       const response = await buyer.get('/listings').expect(200);
 
       expect(titles(response.body)).toEqual([
-        'Hoa quả tuần 41',
         'Loa bluetooth cũ',
+        'Bàn phím cơ cũ',
       ]);
       expect((response.body as Page).items[0]).toMatchObject({
-        id: fruit,
+        id: newer,
+        mode: 'in_stock',
+        category: { slug: 'dien-tu' },
+        seller: { name: 'seller' },
+        thumbnailUrl: null,
+        unitPrice: 500000,
+        unit: 'cái',
+        stockQuantity: 1,
+        campaign: null,
+      });
+      expect((response.body as Page).items[1].id).toBe(older);
+      expect((response.body as Page).nextCursor).toBeNull();
+    });
+
+    it('returns the products of open rounds with summary fields', async () => {
+      await createOpen();
+      const campaign = await openFruit();
+
+      const response = await buyer.get('/listings?mode=preorder').expect(200);
+
+      expect(titles(response.body)).toEqual(['Hoa quả tuần 41']);
+      expect((response.body as Page).items[0]).toMatchObject({
+        id: campaign.items[0].id,
         mode: 'preorder',
         category: { slug: 'thuc-pham-tuoi' },
         seller: { name: 'seller' },
@@ -410,18 +464,33 @@ describe('Listings API', () => {
         unitPrice: 35000,
         unit: 'kg',
         stockQuantity: null,
+        campaign: {
+          id: campaign.id,
+          title: 'Hoa quả theo tuần',
+          orderDeadline: campaign.orderDeadline,
+          deliveryDate: campaign.deliveryDate,
+        },
       });
       expect((response.body as Page).nextCursor).toBeNull();
     });
 
     it('finds Vietnamese text typed with or without diacritics', async () => {
-      await createOpen(preorder());
+      await openFruit();
       await createOpen();
 
-      expect(titles(await search('q=hoa%20qua'))).toEqual(['Hoa quả tuần 41']);
+      expect(titles(await search('mode=preorder&q=hoa%20qua'))).toEqual([
+        'Hoa quả tuần 41',
+      ]);
       expect(
-        titles(await search(`q=${encodeURIComponent('HOA QUẢ')}`)),
+        titles(
+          await search(`mode=preorder&q=${encodeURIComponent('HOA QUẢ')}`),
+        ),
       ).toEqual(['Hoa quả tuần 41']);
+      expect(titles(await search(`q=${encodeURIComponent('LOA cũ')}`))).toEqual(
+        ['Loa bluetooth cũ'],
+      );
+      // A keyword stays inside the mode that was asked for.
+      expect(titles(await search('q=hoa%20qua'))).toEqual([]);
     });
 
     it('finds a listing by its description and by a prefix', async () => {
@@ -430,7 +499,7 @@ describe('Listings API', () => {
         title: 'Thanh lý đồ cũ',
         description: 'Loa JBL Go 3',
       });
-      await createOpen(preorder());
+      await openFruit();
 
       expect(titles(await search('q=jbl'))).toEqual(['Thanh lý đồ cũ']);
       expect(titles(await search('q=lo'))).toEqual(['Thanh lý đồ cũ']);
@@ -452,8 +521,11 @@ describe('Listings API', () => {
 
     it('filters by category and mode', async () => {
       await createOpen();
-      await createOpen(preorder());
+      await openFruit();
 
+      expect(titles(await search('mode=in_stock'))).toEqual([
+        'Loa bluetooth cũ',
+      ]);
       expect(titles(await search('category=dien-tu'))).toEqual([
         'Loa bluetooth cũ',
       ]);
@@ -463,23 +535,26 @@ describe('Listings API', () => {
       expect(titles(await search('category=dien-tu&mode=preorder'))).toEqual(
         [],
       );
+      expect(
+        titles(await search('category=thuc-pham-tuoi&mode=preorder')),
+      ).toEqual(['Hoa quả tuần 41']);
+      expect(titles(await search('category=thuc-pham-tuoi'))).toEqual([]);
       expect(titles(await search('category=khong-co'))).toEqual([]);
       await buyer.get('/listings?mode=nonsense').expect(400);
     });
 
-    it('never lists drafts, closed listings or expired pre-orders', async () => {
+    it('never lists drafts, closed listings or the products of finished rounds', async () => {
       await createDraft();
       const closed = await createOpen({ ...inStock, title: 'Đã đóng rồi' });
       await seller.post(`/listings/${closed}/close`).expect(200);
-      const expired = await createOpen(preorder());
-      await dataSource.query(
-        `UPDATE listings SET order_deadline = now() - interval '1 minute' WHERE id = $1`,
-        [expired],
-      );
-      await redis.flushdb();
+      await seller.post('/campaigns').send(fruitRound()).expect(201);
+      const closedRound = await openFruit();
+      await seller.post(`/campaigns/${closedRound.id}/close`).expect(200);
+      await expire(await openFruit());
 
       expect(titles(await search(''))).toEqual([]);
-      expect(titles(await search('q=hoa'))).toEqual([]);
+      expect(titles(await search('mode=preorder'))).toEqual([]);
+      expect(titles(await search('mode=preorder&q=hoa'))).toEqual([]);
     });
 
     it('pages through every listing exactly once, newest first', async () => {

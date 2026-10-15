@@ -7,7 +7,7 @@ import {
 } from './orders.constants.js';
 import { UserLocale } from '../users/user.entity.js';
 
-interface CsvLabels {
+export interface CsvLabels {
   headBeforeQuantity: [string, string, string, string];
   quantity: string;
   headAfterQuantity: [string, string, string, string, string, string];
@@ -20,7 +20,7 @@ interface CsvLabels {
   outstanding: string;
 }
 
-const LABELS: Record<UserLocale, CsvLabels> = {
+export const LABELS: Record<UserLocale, CsvLabels> = {
   [UserLocale.Vi]: {
     headBeforeQuantity: ['Mã đơn', 'Người mua', 'Email', 'Nơi giao'],
     quantity: 'Số lượng',
@@ -89,7 +89,7 @@ const LABELS: Record<UserLocale, CsvLabels> = {
  * cells get a leading apostrophe. Numbers are passed as numbers and are
  * written bare so the spreadsheet can add them up.
  */
-function cell(value: string | number | null): string {
+export function cell(value: string | number | null): string {
   if (value === null) {
     return '';
   }
@@ -100,7 +100,7 @@ function cell(value: string | number | null): string {
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
-function localDateTime(iso: string): string {
+export function localDateTime(iso: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: BUSINESS_TIME_ZONE,
     year: 'numeric',

@@ -10,6 +10,7 @@ import {
   UpdateDateColumn,
   VirtualColumn,
 } from 'typeorm';
+import { Campaign } from '../campaigns/campaign.entity.js';
 import { Category } from '../categories/category.entity.js';
 import { User } from '../users/user.entity.js';
 import { ListingImage } from './listing-image.entity.js';
@@ -55,6 +56,24 @@ export class Listing {
   unitPrice!: number;
 
   /**
+   * The pre-order round this product belongs to; null for in-stock goods.
+   * A pre-order listing always has one (CK_listings_mode_campaign).
+   */
+  @Column({ name: 'campaign_id', type: 'uuid', nullable: true })
+  campaignId!: string | null;
+
+  @ManyToOne(() => Campaign, (campaign) => campaign.items, {
+    nullable: true,
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'campaign_id' })
+  campaign!: Relation<Campaign> | null;
+
+  /** Position among the products of its round; 0 for in-stock goods. */
+  @Column({ name: 'sort_order', type: 'smallint', default: 0 })
+  sortOrder!: number;
+
+  /**
    * What is left to sell, for in-stock products; null for pre-orders, which
    * are unlimited. PostgreSQL numeric arrives as a string.
    */
@@ -78,18 +97,15 @@ export class Listing {
   })
   status!: ListingStatus;
 
-  @Column({ name: 'accepts_prepaid_qr', type: 'boolean' })
-  acceptsPrepaidQr!: boolean;
+  /**
+   * Payment terms of an in-stock product. Null for a product of a round,
+   * whose terms are the round's; read them through `paymentTermsOf`.
+   */
+  @Column({ name: 'accepts_prepaid_qr', type: 'boolean', nullable: true })
+  acceptsPrepaidQr!: boolean | null;
 
-  @Column({ name: 'accepts_pay_on_delivery', type: 'boolean' })
-  acceptsPayOnDelivery!: boolean;
-
-  @Column({ name: 'order_deadline', type: 'timestamptz', nullable: true })
-  orderDeadline!: Date | null;
-
-  /** Calendar date, YYYY-MM-DD. */
-  @Column({ name: 'delivery_date', type: 'date', nullable: true })
-  deliveryDate!: string | null;
+  @Column({ name: 'accepts_pay_on_delivery', type: 'boolean', nullable: true })
+  acceptsPayOnDelivery!: boolean | null;
 
   /** Second-hand condition; null for pre-orders, food and older listings. */
   @Column({
@@ -103,9 +119,6 @@ export class Listing {
   /** The percentage of `condition`, kept in a column so lists can filter by it. */
   @Column({ name: 'condition_percent', type: 'smallint', nullable: true })
   conditionPercent!: number | null;
-
-  @Column({ name: 'reopened_from_id', type: 'uuid', nullable: true })
-  reopenedFromId!: string | null;
 
   @Column({ name: 'search_text', type: 'text', default: '' })
   searchText!: string;

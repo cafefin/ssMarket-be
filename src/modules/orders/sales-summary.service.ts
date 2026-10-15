@@ -1,7 +1,5 @@
 import {
   ForbiddenException,
-  HttpException,
-  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,6 +11,7 @@ import type {
   BulkResultDto,
   SalesSummaryDto,
 } from './dto/summary.dto.js';
+import { runBulk } from './bulk-orders.js';
 import { OrdersRepository } from './orders.repository.js';
 import { OrdersService } from './orders.service.js';
 
@@ -26,7 +25,7 @@ export class SalesSummaryService {
     private readonly listings: ListingsService,
   ) {}
 
-  /** Who ordered what on one listing: the table that replaces the spreadsheet. */
+  /** Who ordered what on one in-stock listing: the table that replaces the spreadsheet. */
   async getSummary(
     sellerId: string,
     listingId: string,
@@ -60,8 +59,6 @@ export class SalesSummaryService {
         id: listing.id,
         title: listing.title,
         unit: listing.unit,
-        orderDeadline: listing.orderDeadline?.toISOString() ?? null,
-        deliveryDate: listing.deliveryDate,
       },
       rows: orders.map((order) => ({
         orderId: order.id,
@@ -101,32 +98,14 @@ export class SalesSummaryService {
     const unique = [...new Set(orderIds)];
     const ofListing = await this.orders.ordersOfListing(unique, listingId);
 
-    const results: BulkResultDto[] = [];
-    for (const orderId of unique) {
-      if (!ofListing.has(orderId)) {
-        results.push({ orderId, ok: false, code: 'NOT_IN_LISTING' });
-        continue;
-      }
-      try {
-        await (action === 'deliver'
-          ? this.ordersService.deliver(sellerId, orderId)
-          : this.ordersService.confirmPayment(sellerId, orderId));
-        results.push({ orderId, ok: true, code: null });
-      } catch (error) {
-        if (!(error instanceof HttpException)) {
-          throw error;
-        }
-        results.push({
-          orderId,
-          ok: false,
-          code:
-            error instanceof DomainException
-              ? error.code
-              : (HttpStatus[error.getStatus()] ?? 'ERROR'),
-        });
-      }
-    }
-    return results;
+    return runBulk(
+      this.ordersService,
+      sellerId,
+      action,
+      unique,
+      ofListing,
+      'NOT_IN_LISTING',
+    );
   }
 
   private async findOwned(
@@ -134,7 +113,8 @@ export class SalesSummaryService {
     listingId: string,
   ): Promise<Listing> {
     const listing = await this.listings.findById(listingId);
-    if (!listing) {
+    // A product of a round has no summary of its own; the round has one.
+    if (!listing || listing.campaignId) {
       throw new NotFoundException('Listing not found');
     }
     if (listing.sellerId !== sellerId) {

@@ -34,6 +34,7 @@ import {
   CheckoutRequestDto,
   CheckoutResultDto,
   SetCartLineDto,
+  SetCartLinesDto,
 } from './dto/cart.dto.js';
 
 @ApiTags('cart')
@@ -53,6 +54,17 @@ export class CartController {
   @ApiOkResponse({ type: CartCountDto })
   async count(@CurrentUser() user: AuthUser): Promise<CartCountDto> {
     return { count: await this.cart.count(user.id) };
+  }
+
+  @Put('lines')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @ApiOkResponse({ type: CartDto })
+  setLines(
+    @CurrentUser() user: AuthUser,
+    @Body() body: SetCartLinesDto,
+  ): Promise<CartDto> {
+    return this.cart.setLines(user.id, body.lines);
   }
 
   @Put('lines/:listingId')

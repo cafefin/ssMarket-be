@@ -32,6 +32,6 @@ import { ListingsService } from './listings.service.js';
     ListingImagesRepository,
     ListingImagesService,
   ],
-  exports: [ListingsService],
+  exports: [ListingsService, ListingImagesService],
 })
 export class ListingsModule {}

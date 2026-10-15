@@ -2,12 +2,19 @@ import { BadRequestException } from '@nestjs/common';
 
 /**
  * Newest-first browsing pages by keyset (stable while listings are added),
- * and so does closing-soonest. Ranked search results have no stable key, so
- * they page by offset.
+ * and so do the products of pre-order rounds: closing soonest first, then
+ * round, position in the round and id. Ranked search results have no stable
+ * key, so they page by offset.
  */
 export type ListingCursor =
   | { kind: 'recent'; publishedAt: string; id: string }
-  | { kind: 'deadline'; orderDeadline: string; id: string }
+  | {
+      kind: 'deadline';
+      orderDeadline: string;
+      campaignId: string;
+      sortOrder: number;
+      id: string;
+    }
   | { kind: 'ranked'; offset: number };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,12 +59,20 @@ export function decodeCursor(raw: string): ListingCursor {
   if (
     candidate.kind === 'deadline' &&
     isIsoTimestamp(candidate.orderDeadline) &&
+    typeof candidate.campaignId === 'string' &&
+    UUID.test(candidate.campaignId) &&
+    typeof candidate.sortOrder === 'number' &&
+    Number.isInteger(candidate.sortOrder) &&
+    candidate.sortOrder >= 0 &&
+    candidate.sortOrder <= 32_767 &&
     typeof candidate.id === 'string' &&
     UUID.test(candidate.id)
   ) {
     return {
       kind: 'deadline',
       orderDeadline: candidate.orderDeadline,
+      campaignId: candidate.campaignId,
+      sortOrder: candidate.sortOrder,
       id: candidate.id,
     };
   }
