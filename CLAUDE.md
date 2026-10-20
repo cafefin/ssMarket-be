@@ -8,8 +8,10 @@ URL the browser sees is on the frontend origin.
 ## Commands
 
 ```bash
-docker compose up -d      # Postgres (host port 5433) and Redis (host port 6380)
-pnpm dev                  # API on http://localhost:4000, Swagger at /docs
+docker compose up -d      # Postgres (5433), Redis (6380), RabbitMQ (5673, UI http://localhost:15673)
+pnpm dev                  # API on http://localhost:4000, Swagger at /docs (compiles dist/)
+pnpm dev:worker           # the worker, node --watch dist/main.worker.js; run pnpm dev first
+pnpm start:worker         # the worker from a build (node dist/main.worker.js)
 pnpm test                 # unit tests
 pnpm test:e2e             # integration tests (needs docker compose up)
 pnpm test:cov             # all tests with the 80% coverage gate
@@ -26,6 +28,8 @@ src/
 ├── cache/       CacheService: fail-open cache-aside with versioned namespaces
 ├── database/    TypeORM connection, health check, migrations/
 ├── redis/       Redis client provider and health check
+├── events/      domain event types, the outbox table and OutboxService
+├── worker/      second entry point (main.worker.ts): relay, RabbitMQ, consumers
 └── modules/
     ├── auth/        Google sign-in, tokens, guards
     ├── users/       accounts, roles, language and seller profile
@@ -36,6 +40,8 @@ src/
     ├── orders/      orders, state rules, idempotency, round summary
     ├── cart/        server-side cart, checkout preview and checkout
     ├── payments/    VietQR payload builder
+    ├── notifications/ in-app notifications: rules, repository, API
+    ├── chat-channel/  the Google Chat channel: settings, templates, delivery log
     ├── dev-login/   development-only sign-in
     ├── storage/     StorageService (local disk today) and /media
     └── health/
@@ -89,7 +95,9 @@ specific case. Codes in use: `BANK_PROFILE_REQUIRED` (422), `INVALID_IMAGE`
 `IDEMPOTENCY_KEY_REQUIRED` (400), `ORDER_NOT_EDITABLE` (409),
 `SUMMARY_TOO_LARGE` (422), `CATEGORY_EXISTS` (409), `CATEGORY_INACTIVE` (400),
 `CART_FULL` (409), `CHECKOUT_CHANGED` (409), `INVALID_CAMPAIGN` (422),
-`CAMPAIGN_ITEM_HAS_ORDERS` (409).
+`CAMPAIGN_ITEM_HAS_ORDERS` (409), `INVALID_CHAT_SETTINGS` (422),
+`INVALID_CHAT_TEMPLATE` (422), `CHAT_WEBHOOK_NOT_SET` (409),
+`CHAT_SEND_FAILED` (502).
 Pass structured data the frontend needs
 (which items ran out, the id of an existing order) as the `details` argument.
 
@@ -172,6 +180,99 @@ its products, which are rows of `listings` with `campaign_id`.
   /campaigns/:id`, `POST /campaigns/:id/publish|close|reopen`. Every write
   bumps the listings cache version; the public round page is cached.
 - Module direction is `orders → campaigns → listings`; never the reverse.
+
+## Events and the worker
+
+- The API never connects to RabbitMQ. A change that others must hear about
+  writes an `outbox_events` row with `OutboxService.add(tx, event)` **inside
+  the transaction of the change**, so the event exists if and only if the
+  change committed.
+- The worker (`src/main.worker.ts`, `WorkerModule`) is a separate process
+  with no HTTP server. `OutboxRelay` publishes unpublished rows to the topic
+  exchange `ssmarket.events` (routing key = event type) and marks them
+  published; it stops a batch at the first failed publish. `Maintenance`
+  ticks every minute (digest, cleanup of old rows).
+- Events and who hears them:
+
+  | Event | Emitted when | Heard by |
+  |---|---|---|
+  | `order.placed` | an order is created (one per order) | seller, in-app |
+  | `order.edited` | buyer edits a pre-order | seller, in-app |
+  | `order.payment_reported` | buyer reports a transfer | seller, in-app |
+  | `order.payment_confirmed` / `order.payment_rejected` | seller decides | buyer, in-app |
+  | `order.delivered` | seller marks delivered | buyer, in-app |
+  | `order.cancelled` | either side cancels | the other side, in-app |
+  | `campaign.opened` | a round becomes `open` for the first time | Google Chat |
+  | `campaign.reopened` | a round made by "reopen" becomes `open` | Google Chat |
+  | `listing.published` | an in-stock product is published (off by default) | Google Chat |
+
+  Bulk seller actions go through the single-order methods, so each order
+  emits its own event. The person who caused an event is never notified.
+- Payloads carry everything a consumer displays (names, title, total), so
+  consumers never read business tables.
+- Topology (`topology.ts`): queues `notifications.inapp` (`order.*`) and
+  `notifications.gchat` (`campaign.*`, `listing.published`). A handler that
+  throws makes `RabbitClient.consume` log, then nack without requeue; the
+  message goes to `<queue>.retry` (30 s TTL) and back. After 5 failures it
+  goes to `<queue>.dlq`. Look at the DLQs in the management UI.
+- Handlers are plain service methods registered per queue in `EVENT_HANDLERS`
+  (`WorkerModule`). Delivery is at least once, so a handler must be
+  **idempotent by event id**.
+- `RabbitClient` is a plain class provider (no injection token).
+  `RedisModule` closes the client in `onApplicationShutdown`, so
+  `WorkerRunner` can drain in `beforeApplicationShutdown`.
+- New event: add the type and payload to `domain-events.ts`, write the builder
+  next to the module that emits it, add a binding in `topology.ts` only for a
+  new routing key, and handle it in the consuming service.
+- **Core module and API module.** Nest registers `@UseGuards` guards as
+  injectables of the controller's module, and the worker has no JwtService or
+  throttler. So a module with routes is split: `<name>.module.ts` (providers
+  only, imported by `WorkerModule`) and `<name>-api.module.ts` (the controller,
+  imported by `AppModule`). Never import an `*-api.module.ts` in the worker.
+
+## Notifications
+
+- `notification-rules.ts` decides, from the event type and payload, who gets a
+  notification and with which `params`.
+- `params` hold data (the payload plus the recipient's `role`), never text.
+  The frontend renders the text in the user's language.
+- `order.edited` merges into the unread notification of the same order
+  (`mergeEdited`) instead of adding a row.
+- Rows older than 90 days are deleted by `Maintenance`.
+- Routes (`/notifications`): list, `unread-count`, `read-all`, `:id/read`.
+
+## Google Chat channel
+
+- One webhook for the whole marketplace, managed by admins under
+  `/admin/chat-channel` (settings, templates, preview, test send, delivery log).
+- The webhook URL is a secret: validated against the prefix
+  `https://chat.googleapis.com/v1/spaces/` (`chat-settings-rules.ts`), never
+  returned by the API (only `webhookHint`), never
+  logged.
+- Handling an event (`ChatDeliveryService.handleEvent`), stopping at the first
+  step that applies: (1) a `chat_deliveries` row for the event id exists, skip;
+  (2) channel off, no webhook, or this event type off, skip without a log row;
+  (3) render the message; (4) per seller and type rate limit (Redis key with a
+  TTL of M minutes), logged `rate_limited_seller`; (5) per hour limit (Redis
+  counter by Vietnam clock hour, empty = unlimited), logged
+  `rate_limited_global`; (6) POST with a 5 s timeout, up to 3 attempts on
+  network errors, 429 and 5xx, then `sent` or `failed`.
+- Templates use `{{var}}` only, no logic. Values are sanitized
+  (`sanitizeValue`); only `items` of the digest is trusted, because the system
+  builds it from messages that were sanitized already. Defaults live in
+  `chat-templates.ts` and are seeded by the migration; keep the two equal.
+- The hourly digest (`runDigest`, started by `Maintenance`) sends the messages
+  held back by a limit in one message; a Redis lock per hour makes several
+  workers run it once. Test sends run in the API request, are not counted
+  against limits and are prefixed `[Thử]`.
+- `chat_channel_settings.updated_by`, `chat_templates.updated_by` and
+  `chat_deliveries.seller_id` have **no foreign key on purpose**: the record
+  outlives the person, and a FK to `users` would let `TRUNCATE users CASCADE`
+  empty the seeded config rows in tests.
+- Every insert into `chat_deliveries` goes through
+  `ChatChannelRepository.recordDelivery`, which writes `created_at` from a JS
+  `Date` (millisecond precision) so the log's `(created_at, id)` keyset cursor
+  is exact.
 
 ## Combos
 
@@ -370,6 +471,14 @@ seller in two browser windows. Through the frontend it is
 - Write the test first. Unit tests sit next to the code as `*.spec.ts` and mock dependencies.
 - Integration tests in `test/` boot the real app against the `ssmarket_test` database and Redis database 1; only Google is faked. `test/setup-env.ts` forces those connections, so tests never touch development data.
 - Coverage must stay at or above 80% for lines, branches, functions and statements. Add tests rather than exclusions.
+- Integration tests also use RabbitMQ, in the vhost `ssmarket_test` created by
+  `ensureTestVhost`. `createTestApp(identity, { chatFetch })` and
+  `createTestWorker({ fetch })` point Google Chat at the fake server in
+  `test/utils/fake-chat.ts`. `createTestWorker` stubs `Maintenance`; tests call
+  `runDigest` directly. `CHAT_SLEEP` is instant in tests. Use `waitFor`
+  (`test/utils/wait-for.ts`) for anything the worker does.
+- The chat tables are reset with UPDATEs, not truncation (see "Google Chat
+  channel").
 - Integration tests truncate `users` between tests, which does not reset
   `categories`. A test that changes categories restores them in `beforeEach`:
   `DELETE FROM categories WHERE id > 6`, then the six seeded names and
@@ -389,6 +498,7 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `JWT_ACCESS_SECRET` | At least 32 characters |
 | `UPLOAD_DIR` | Directory for uploaded images (default `./uploads`) |
 | `ADMIN_EMAILS` | Comma-separated emails that get the admin role at sign-in |
+| `RABBITMQ_URL` | RabbitMQ connection; read by the worker only, the API never uses it |
 | `DEV_LOGIN_ENABLED` | `true` enables the development sign-in; development only |
 
 ## Conventions

@@ -49,10 +49,11 @@ Requirements: Node.js 24, pnpm, Docker.
 
 ```bash
 cp .env.example .env        # then fill in the Google OAuth values
-docker compose up -d        # Postgres on 5433, Redis on 6380
+docker compose up -d        # Postgres on 5433, Redis on 6380, RabbitMQ on 5673
 pnpm install
 pnpm migration:run
 pnpm dev
+pnpm dev:worker             # in a second terminal: events, notifications, Google Chat
 ```
 
 The API runs at http://localhost:4000 and Swagger UI at http://localhost:4000/docs.
@@ -75,6 +76,7 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 | `ALLOWED_EMAIL_DOMAIN` | Only verified accounts on this domain may sign in |
 | `JWT_ACCESS_SECRET` | Random string of at least 32 characters |
 | `UPLOAD_DIR` | Directory for uploaded images |
+| `RABBITMQ_URL` | RabbitMQ connection; the worker only |
 | `DEV_LOGIN_ENABLED` | Local testing only; see "Development sign-in" |
 
 ## Scripts
@@ -83,6 +85,8 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 pnpm dev                 # watch mode
 pnpm build               # compile to dist/
 pnpm start:prod          # run the compiled app
+pnpm dev:worker          # the worker (run pnpm dev first so dist/ exists)
+pnpm start:worker        # run the compiled worker
 pnpm lint                # oxlint, type-aware
 pnpm typecheck
 pnpm format              # Prettier
