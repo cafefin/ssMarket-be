@@ -4,6 +4,7 @@ import { validateWorkerEnv } from '../config/env.validation.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { EventsModule } from '../events/events.module.js';
 import { ChatChannelModule } from '../modules/chat-channel/chat-channel.module.js';
+import { ChatDeliveryService } from '../modules/chat-channel/chat-delivery.service.js';
 import { NotificationsModule } from '../modules/notifications/notifications.module.js';
 import { NotificationsService } from '../modules/notifications/notifications.service.js';
 import { RedisModule } from '../redis/redis.module.js';
@@ -30,10 +31,13 @@ import { WorkerRunner } from './worker.runner.js';
     WorkerRunner,
     {
       provide: EVENT_HANDLERS,
-      inject: [NotificationsService],
-      useFactory: (notifications: NotificationsService): EventHandlers => ({
+      inject: [NotificationsService, ChatDeliveryService],
+      useFactory: (
+        notifications: NotificationsService,
+        chat: ChatDeliveryService,
+      ): EventHandlers => ({
         [INAPP_QUEUE.name]: (event) => notifications.handleEvent(event),
-        [GCHAT_QUEUE.name]: async () => {}, // replaced in Task 12
+        [GCHAT_QUEUE.name]: (event) => chat.handleEvent(event),
       }),
     },
   ],
