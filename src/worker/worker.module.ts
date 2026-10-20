@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 import { validateWorkerEnv } from '../config/env.validation.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { EventsModule } from '../events/events.module.js';
+import { NotificationsModule } from '../modules/notifications/notifications.module.js';
+import { NotificationsService } from '../modules/notifications/notifications.service.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { EVENT_HANDLERS, type EventHandlers } from './event-handlers.js';
 import { Maintenance } from './maintenance.js';
@@ -17,7 +19,8 @@ import { WorkerRunner } from './worker.runner.js';
     DatabaseModule,
     RedisModule,
     EventsModule,
-    // NotificationsModule (Task 8) and ChatChannelModule (Task 11) are added here.
+    NotificationsModule,
+    // ChatChannelModule (Task 11) is added here.
   ],
   providers: [
     RabbitClient,
@@ -26,8 +29,9 @@ import { WorkerRunner } from './worker.runner.js';
     WorkerRunner,
     {
       provide: EVENT_HANDLERS,
-      useFactory: (): EventHandlers => ({
-        [INAPP_QUEUE.name]: async () => {}, // replaced in Task 8
+      inject: [NotificationsService],
+      useFactory: (notifications: NotificationsService): EventHandlers => ({
+        [INAPP_QUEUE.name]: (event) => notifications.handleEvent(event),
         [GCHAT_QUEUE.name]: async () => {}, // replaced in Task 12
       }),
     },
