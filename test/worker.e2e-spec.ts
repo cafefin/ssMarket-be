@@ -116,9 +116,9 @@ describe('Worker: running consumers', () => {
   });
 
   it('publishes an outbox row and the queues end up empty', async () => {
+    await dataSource.query('DELETE FROM outbox_events');
     worker = await createTestWorker();
     await purgeAll(channel);
-    await dataSource.query('DELETE FROM outbox_events');
     const envelope = await app
       .get(TransactionRunner)
       .run((tx) =>

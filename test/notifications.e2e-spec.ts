@@ -71,6 +71,8 @@ describe('In-app notifications from order events', () => {
     dataSource = app.get(DataSource);
     ({ channel, close: closeChannel } = await openTestChannel());
     await purgeAll(channel);
+    // Rows left by earlier files would otherwise be relayed to this worker.
+    await dataSource.query('DELETE FROM outbox_events');
     worker = await createTestWorker();
   });
 

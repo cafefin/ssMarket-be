@@ -82,6 +82,8 @@ describe('Google Chat delivery from events', () => {
     redis = app.get<Redis>(REDIS_CLIENT);
     ({ channel, close: closeChannel } = await openTestChannel());
     await purgeAll(channel);
+    // Rows left by earlier files would otherwise be relayed to this worker.
+    await dataSource.query('DELETE FROM outbox_events');
     worker = await createTestWorker({ fetch: fake.fetch });
   });
 
