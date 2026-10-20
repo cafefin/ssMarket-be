@@ -1,6 +1,6 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { OutboxRepository } from '../events/outbox.repository.js';
-import { RABBIT_CLIENT, type RabbitClient } from './rabbit.client.js';
+import { RabbitClient } from './rabbit.client.js';
 
 const BATCH_SIZE = 100;
 
@@ -14,7 +14,7 @@ export class OutboxRelay {
 
   constructor(
     private readonly outbox: OutboxRepository,
-    @Inject(RABBIT_CLIENT) private readonly rabbit: RabbitClient,
+    private readonly rabbit: RabbitClient,
   ) {}
 
   /** One pass; returns how many rows were published. */
@@ -43,6 +43,8 @@ export class OutboxRelay {
           this.logger.warn(
             `Publish of ${row.type} ${row.id} failed: ${(error as Error).message}`,
           );
+          // The broker is likely down; later rows must not overtake this one.
+          break;
         }
       }
       if (published.length > 0) {
@@ -56,6 +58,7 @@ export class OutboxRelay {
   }
 
   start(intervalMs = 1000): void {
+    if (!this.stopped) return;
     this.stopped = false;
     const schedule = (): void => {
       if (this.stopped) return;

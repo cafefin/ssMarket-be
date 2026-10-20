@@ -73,8 +73,8 @@ describe('OutboxRelay', () => {
     expect(outbox.bumpAttempts).not.toHaveBeenCalled();
   });
 
-  it('marks only the confirmed rows and bumps attempts of the failed one', async () => {
-    outbox.lockUnpublished.mockResolvedValue([row('a'), row('b')]);
+  it('stops the batch at the first failure and leaves later rows untouched', async () => {
+    outbox.lockUnpublished.mockResolvedValue([row('a'), row('b'), row('c')]);
     rabbit.publish
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('nack'));
@@ -87,6 +87,7 @@ describe('OutboxRelay', () => {
       expect.any(Date),
     );
     expect(outbox.bumpAttempts).toHaveBeenCalledWith(tx, ['b']);
+    expect(rabbit.publish).toHaveBeenCalledTimes(2);
   });
 
   it('does nothing without rows', async () => {
@@ -106,6 +107,15 @@ describe('OutboxRelay', () => {
     expect(outbox.transaction).toHaveBeenCalledTimes(2);
     expect(logError).toHaveBeenCalled();
 
+    await relay.stop();
+  });
+
+  it('ignores a second start while running', async () => {
+    vi.useFakeTimers();
+    relay.start();
+    relay.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(outbox.transaction).toHaveBeenCalledTimes(1);
     await relay.stop();
   });
 

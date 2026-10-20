@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { ConfigService } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config';
 import {
   type AmqpConnectionManager,
   type ChannelWrapper,
@@ -8,8 +8,6 @@ import {
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 import type { WorkerEnvironmentVariables } from '../config/env.validation.js';
 import { assertTopology, EVENTS_EXCHANGE } from './topology.js';
-
-export const RABBIT_CLIENT = Symbol('RABBIT_CLIENT');
 
 export interface RabbitMessage {
   content: Buffer;
@@ -35,6 +33,13 @@ export class RabbitClient {
       publishTimeout: 5_000,
       setup: (channel: ConfirmChannel) => assertTopology(channel),
     });
+    // Emitted when setup fails or a consumer cannot be re-established;
+    // without a listener Node would throw an uncaught exception.
+    this.channel.on('error', (err: unknown) =>
+      this.logger.error(
+        `RabbitMQ channel error: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
   }
 
   /** Resolves once the topology exists on the broker. */
@@ -75,12 +80,19 @@ export class RabbitClient {
   ): Promise<string> {
     const { consumerTag } = await this.channel.consume(
       queue,
-      (raw) =>
-        void onMessage({
+      (raw) => {
+        const message: RabbitMessage = {
           content: raw.content,
           headers: raw.properties.headers as Record<string, unknown> | undefined,
           raw,
-        }),
+        };
+        onMessage(message).catch((error: unknown) => {
+          this.logger.error(
+            `Handler for ${queue} failed on message ${raw.properties.messageId ?? '(no id)'}: ${(error as Error).message}`,
+          );
+          this.reject(message);
+        });
+      },
       { prefetch },
     );
     return consumerTag;
