@@ -19,6 +19,11 @@ const PAGE_SIZE = 20;
 export class NotificationsService {
   constructor(private readonly notifications: NotificationsRepository) {}
 
+  /** Retention: removes notifications created before `before`. */
+  deleteOlderThan(before: Date): Promise<number> {
+    return this.notifications.deleteCreatedBefore(before);
+  }
+
   /** In-app queue handler. Idempotent: a redelivered event changes nothing. */
   async handleEvent(event: EventEnvelope): Promise<void> {
     if (!isOrderEvent(event)) return;

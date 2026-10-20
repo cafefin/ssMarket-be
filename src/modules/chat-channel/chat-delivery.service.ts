@@ -3,9 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import type { EnvironmentVariables } from '../../config/env.validation.js';
 import { isChatEvent, type EventEnvelope } from '../../events/domain-events.js';
 import { ChatChannelRepository } from './chat-channel.repository.js';
-import { chatVariables, sellerOf } from './chat-format.js';
+import { chatVariables, sellerOf, startOfVietnamHour } from './chat-format.js';
 import { ChatOutcome } from './chat-delivery.entity.js';
 import { ChatRateLimiter } from './chat-rate-limiter.js';
+import { DIGEST_TYPE } from './chat-templates.js';
+import { digestItems } from './digest.js';
 import { GoogleChatClient } from './google-chat.client.js';
 import { renderTemplate } from './template-renderer.js';
 
@@ -66,5 +68,58 @@ export class ChatDeliveryService {
     return result.ok
       ? record(ChatOutcome.Sent)
       : record(ChatOutcome.Failed, result.error);
+  }
+
+  /**
+   * Hourly digest (spec §7.5): one message for the rows held back before the
+   * current Vietnam hour. Counts neither against the hourly limit nor the
+   * seller cooldown.
+   */
+  async runDigest(now = new Date()): Promise<void> {
+    const since = new Date(now.getTime() - 24 * 3_600_000);
+    const held = await this.repository.pendingHeld(
+      since,
+      startOfVietnamHour(now),
+    );
+    if (held.length === 0) return;
+    const ids = held.map((row) => row.id);
+
+    const settings = await this.repository.getSettings();
+    const template = await this.repository.getTemplate(DIGEST_TYPE);
+    if (!settings.enabled || !settings.webhookUrl || !template?.enabled) {
+      await this.repository.markDigested(ids, now);
+      return;
+    }
+
+    const message = renderTemplate(
+      template.template,
+      {
+        count: String(held.length),
+        items: digestItems(held.map((row) => row.message ?? '')),
+      },
+      new Set(['items']),
+    );
+    const result = await this.client.send(settings.webhookUrl, message);
+    const row = {
+      eventId: null,
+      eventType: DIGEST_TYPE,
+      sellerId: null,
+      message,
+    };
+    if (!result.ok) {
+      await this.repository.recordDelivery({
+        ...row,
+        outcome: ChatOutcome.Failed,
+        error: result.error,
+      });
+      return;
+    }
+    await this.repository.transaction(async (tx) => {
+      await this.repository.recordDelivery(
+        { ...row, outcome: ChatOutcome.Digest, error: null },
+        tx,
+      );
+      await this.repository.markDigested(ids, now, tx);
+    });
   }
 }

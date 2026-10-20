@@ -8,6 +8,7 @@ import {
   CHAT_TEMPLATE_TYPES,
   DEFAULT_TEMPLATES,
 } from '../src/modules/chat-channel/chat-templates.js';
+import { ChatDeliveryService } from '../src/modules/chat-channel/chat-delivery.service.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
@@ -202,5 +203,81 @@ describe('Google Chat delivery from events', () => {
 
     expect(fake.received).toHaveLength(1);
     expect(await deliveries()).toHaveLength(1);
+  });
+
+  describe('hourly digest', () => {
+    const now = new Date('2026-10-15T03:00:30.000Z'); // 10:00:30 in Vietnam
+    const previousHour = new Date('2026-10-15T02:30:00.000Z');
+    const currentHour = new Date('2026-10-15T03:00:10.000Z');
+    const digest = () => worker.get(ChatDeliveryService).runDigest(now);
+    const hold = (
+      message: string,
+      createdAt: Date,
+      outcome = 'rate_limited_seller',
+    ) =>
+      dataSource.query(
+        `INSERT INTO chat_deliveries (event_type, outcome, message, created_at)
+         VALUES ('campaign.opened', $1, $2, $3)`,
+        [outcome, message, createdAt],
+      );
+    const digestedCount = async (): Promise<number> =>
+      Number(
+        (
+          await dataSource.query(
+            'SELECT count(*) FROM chat_deliveries WHERE digested_at IS NOT NULL',
+          )
+        )[0].count,
+      );
+
+    it('sends one message with the held rows, marks them, and not twice', async () => {
+      await hold('Tin một', previousHour);
+      await hold(
+        'Tin hai',
+        new Date(previousHour.getTime() + 1),
+        'rate_limited_global',
+      );
+      await hold('Tin ba', new Date(previousHour.getTime() + 2));
+
+      await digest();
+
+      expect(fake.received).toHaveLength(1);
+      const { text } = fake.received[0];
+      expect(text.startsWith('📋')).toBe(true);
+      for (const line of ['• Tin một', '• Tin hai', '• Tin ba']) {
+        expect(text).toContain(line);
+      }
+      expect(await deliveries('digest')).toHaveLength(1);
+      expect(await digestedCount()).toBe(3);
+
+      await digest();
+      expect(fake.received).toHaveLength(1);
+    });
+
+    it('sends nothing without held rows', async () => {
+      await digest();
+      expect(fake.received).toHaveLength(0);
+      expect(await deliveries()).toHaveLength(0);
+    });
+
+    it('marks rows digested without sending when chat.digest is disabled', async () => {
+      await dataSource.query(
+        "UPDATE chat_templates SET enabled = false WHERE event_type = 'chat.digest'",
+      );
+      await hold('Tin một', previousHour);
+      await digest();
+      expect(fake.received).toHaveLength(0);
+      expect(await digestedCount()).toBe(1);
+      expect(await deliveries('digest')).toHaveLength(0);
+    });
+
+    it('leaves a row of the current hour for the next digest', async () => {
+      await hold('Tin cũ', previousHour);
+      await hold('Tin mới', currentHour);
+      await digest();
+      expect(fake.received).toHaveLength(1);
+      expect(fake.received[0].text).toContain('Tin cũ');
+      expect(fake.received[0].text).not.toContain('Tin mới');
+      expect(await digestedCount()).toBe(1);
+    });
   });
 });

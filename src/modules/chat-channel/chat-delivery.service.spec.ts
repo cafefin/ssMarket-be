@@ -191,3 +191,135 @@ describe('ChatDeliveryService.handleEvent', () => {
     );
   });
 });
+
+describe('ChatDeliveryService.runDigest', () => {
+  const at = new Date('2026-10-15T03:00:30.000Z');
+  const hourStart = new Date('2026-10-15T03:00:00.000Z');
+  const tx = { tx: true };
+  let repo: Record<string, ReturnType<typeof vi.fn>>;
+  let limiter: Record<string, ReturnType<typeof vi.fn>>;
+  let client: { send: ReturnType<typeof vi.fn> };
+  let settings: Record<string, unknown>;
+  let template: Record<string, unknown>;
+  let held: { id: string; message: string }[];
+  let service: ChatDeliveryService;
+
+  beforeEach(() => {
+    settings = { enabled: true, webhookUrl: WEBHOOK };
+    template = { enabled: true, template: 'N={{count}}\n{{items}}' };
+    held = [
+      { id: 'a', message: 'one' },
+      { id: 'b', message: 'two' },
+      { id: 'c', message: 'three' },
+    ];
+    repo = {
+      getSettings: vi.fn().mockImplementation(async () => settings),
+      getTemplate: vi.fn().mockImplementation(async () => template),
+      pendingHeld: vi.fn().mockImplementation(async () => held),
+      markDigested: vi.fn().mockResolvedValue(undefined),
+      recordDelivery: vi.fn().mockResolvedValue(undefined),
+      transaction: vi
+        .fn()
+        .mockImplementation(async (work: (t: unknown) => unknown) => work(tx)),
+    };
+    limiter = {
+      claimSellerSlot: vi.fn(),
+      claimHourSlot: vi.fn(),
+    };
+    client = { send: vi.fn().mockResolvedValue({ ok: true }) };
+    service = new ChatDeliveryService(
+      repo as unknown as ChatChannelRepository,
+      limiter as unknown as ChatRateLimiter,
+      client as unknown as GoogleChatClient,
+      { get: () => 'http://localhost:3000' } as unknown as ConfigService<
+        never,
+        true
+      >,
+    );
+  });
+
+  it('asks for held rows of the last 24 hours before the current hour', async () => {
+    await service.runDigest(at);
+    expect(repo.pendingHeld).toHaveBeenCalledWith(
+      new Date('2026-10-14T03:00:30.000Z'),
+      hourStart,
+    );
+  });
+
+  it('does nothing without held rows', async () => {
+    held = [];
+    await service.runDigest(at);
+    expect(client.send).not.toHaveBeenCalled();
+    expect(repo.recordDelivery).not.toHaveBeenCalled();
+    expect(repo.markDigested).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the channel is disabled', { enabled: false }],
+    ['there is no webhook', { webhookUrl: null }],
+  ])('marks rows digested without sending when %s', async (_name, patch) => {
+    Object.assign(settings, patch);
+    await service.runDigest(at);
+    expect(repo.markDigested).toHaveBeenCalledWith(['a', 'b', 'c'], at);
+    expect(client.send).not.toHaveBeenCalled();
+    expect(repo.recordDelivery).not.toHaveBeenCalled();
+  });
+
+  it('marks rows digested without sending when chat.digest is disabled', async () => {
+    template.enabled = false;
+    await service.runDigest(at);
+    expect(repo.markDigested).toHaveBeenCalledWith(['a', 'b', 'c'], at);
+    expect(client.send).not.toHaveBeenCalled();
+    expect(repo.recordDelivery).not.toHaveBeenCalled();
+  });
+
+  it('sends the digest, then records it and marks every row in one transaction', async () => {
+    held = Array.from({ length: 25 }, (_, i) => ({
+      id: `id${i}`,
+      message: `m${i}`,
+    }));
+    await service.runDigest(at);
+    const text = client.send.mock.calls[0][1] as string;
+    expect(client.send).toHaveBeenCalledWith(WEBHOOK, text);
+    expect(text).toContain('N=25');
+    expect(text).toContain('• m0');
+    expect(text).toContain('… và 5 tin khác');
+    expect(repo.transaction).toHaveBeenCalledTimes(1);
+    expect(repo.recordDelivery).toHaveBeenCalledWith(
+      {
+        eventId: null,
+        eventType: 'chat.digest',
+        sellerId: null,
+        outcome: ChatOutcome.Digest,
+        message: text,
+        error: null,
+      },
+      tx,
+    );
+    expect(repo.markDigested).toHaveBeenCalledWith(
+      held.map((row) => row.id),
+      at,
+      tx,
+    );
+  });
+
+  it('records failed and leaves the rows when sending fails', async () => {
+    client.send.mockResolvedValue({ ok: false, error: 'HTTP 500' });
+    await service.runDigest(at);
+    expect(repo.recordDelivery).toHaveBeenCalledTimes(1);
+    expect(repo.recordDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'chat.digest',
+        outcome: ChatOutcome.Failed,
+        error: 'HTTP 500',
+      }),
+    );
+    expect(repo.markDigested).not.toHaveBeenCalled();
+  });
+
+  it('never touches the hourly counter or the seller cooldown', async () => {
+    await service.runDigest(at);
+    expect(limiter.claimHourSlot).not.toHaveBeenCalled();
+    expect(limiter.claimSellerSlot).not.toHaveBeenCalled();
+  });
+});
