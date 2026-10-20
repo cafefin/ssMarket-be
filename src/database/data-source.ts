@@ -9,6 +9,11 @@ import { CartLine } from '../modules/cart/cart-line.entity.js';
 import { OrderLine } from '../modules/orders/order-line.entity.js';
 import { Order } from '../modules/orders/order.entity.js';
 import { User } from '../modules/users/user.entity.js';
+import { OutboxEvent } from '../events/outbox-event.entity.js';
+import { ChatDelivery } from '../modules/chat-channel/chat-delivery.entity.js';
+import { ChatSettings } from '../modules/chat-channel/chat-settings.entity.js';
+import { ChatTemplate } from '../modules/chat-channel/chat-template.entity.js';
+import { Notification } from '../modules/notifications/notification.entity.js';
 import { migrations } from './migrations/index.js';
 
 // Used only by the TypeORM CLI (pnpm migration:run), which loads the compiled
@@ -26,6 +31,11 @@ export default new DataSource({
     Order,
     OrderLine,
     CartLine,
+    OutboxEvent,
+    Notification,
+    ChatSettings,
+    ChatTemplate,
+    ChatDelivery,
   ],
   migrations,
 });

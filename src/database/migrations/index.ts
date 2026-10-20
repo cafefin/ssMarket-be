@@ -12,6 +12,7 @@ import { OrdersSpanListings1759978800000 } from './1759978800000-orders-span-lis
 import { CreateCart1759982400000 } from './1759982400000-create-cart.js';
 import { SingleProduct1760000000000 } from './1760000000000-single-product.js';
 import { Campaigns1760200000000 } from './1760200000000-campaigns.js';
+import { EventsNotifications1760500000000 } from './1760500000000-events-notifications.js';
 
 // Ordered oldest first. Add every new migration class here.
 export const migrations = [
@@ -29,4 +30,5 @@ export const migrations = [
   CreateCart1759982400000,
   SingleProduct1760000000000,
   Campaigns1760200000000,
+  EventsNotifications1760500000000,
 ];
