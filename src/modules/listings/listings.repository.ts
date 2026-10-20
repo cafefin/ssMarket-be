@@ -8,7 +8,7 @@ import { Listing } from './listing.entity.js';
 import {
   type ListingCondition,
   ListingMode,
-  type ListingStatus,
+  ListingStatus,
 } from './listings.constants.js';
 
 /** The scalar columns a service may write. */
@@ -160,6 +160,30 @@ export class ListingsRepository {
         await insertCombos(manager, id, combos);
       }
       await within?.(manager);
+    });
+  }
+
+  /**
+   * Opens a draft and runs `within` in the same transaction, only if the row
+   * is still a draft (a conditional UPDATE, so two concurrent publishes cannot
+   * both succeed). Returns false, having written nothing, when it was not.
+   */
+  async publishDraft(
+    id: string,
+    publishedAt: Date,
+    within: (tx: Tx) => Promise<void>,
+  ): Promise<boolean> {
+    return this.repository.manager.transaction(async (manager) => {
+      const result = await manager.update(
+        Listing,
+        { id, status: ListingStatus.Draft },
+        { status: ListingStatus.Open, publishedAt },
+      );
+      if (!result.affected) {
+        return false;
+      }
+      await within(manager);
+      return true;
     });
   }
 

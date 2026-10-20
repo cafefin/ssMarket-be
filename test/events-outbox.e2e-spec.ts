@@ -15,6 +15,7 @@ import {
   publishCampaign,
   type TestListing,
 } from './utils/market.js';
+import { waitFor } from './utils/wait-for.js';
 
 type Placed = { id: string; code: string; totalAmount: number };
 type EventRow = { type: string; payload: Record<string, unknown> };
@@ -238,6 +239,43 @@ describe('Order events in the outbox', () => {
         unitPrice: 450000,
       },
     });
+  });
+
+  it('publishes once when two publishes race', async () => {
+    const created = await seller
+      .post('/listings')
+      .send(inStockBody({ title: 'Loa JBL' }))
+      .expect(201);
+    const id = (created.body as { id: string }).id;
+
+    // Hold the row so both requests read the draft, then queue on its lock.
+    const holder = dataSource.createQueryRunner();
+    await holder.connect();
+    await holder.startTransaction();
+    await holder.query('SELECT id FROM listings WHERE id = $1 FOR UPDATE', [id]);
+    const racing = Promise.all([
+      seller.post(`/listings/${id}/publish`).then((response) => response),
+      seller.post(`/listings/${id}/publish`).then((response) => response),
+    ]);
+    await waitFor(async () => {
+      const [{ waiting }] = (await dataSource.query(
+        `SELECT count(*)::int AS waiting FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND query ILIKE 'UPDATE "listings"%'`,
+      )) as { waiting: number }[];
+      expect(waiting).toBe(2);
+    });
+    await holder.commitTransaction();
+    await holder.release();
+    const responses = await racing;
+
+    const statuses = responses
+      .map((response) => response.status)
+      .sort((a, b) => a - b);
+    expect(statuses).toEqual([200, 409]);
+    const refused = responses.find((response) => response.status === 409);
+    expect(refused?.body).toMatchObject({ code: 'INVALID_LISTING_STATE' });
+    const rows = await events();
+    expect(rows.map((row) => row.type)).toEqual(['listing.published']);
   });
 
   it('writes nothing when a publish is refused for a hidden category', async () => {

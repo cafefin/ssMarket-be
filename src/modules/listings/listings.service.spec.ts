@@ -90,6 +90,7 @@ describe('ListingsService', () => {
     findBySeller: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    publishDraft: vi.fn(),
   };
   const users = { getById: vi.fn(), hasBankProfile: vi.fn() };
   const categories = { findById: vi.fn() };
@@ -306,16 +307,16 @@ describe('ListingsService', () => {
   });
 
   describe('publish', () => {
+    beforeEach(() => {
+      repository.publishDraft.mockResolvedValue(true);
+    });
+
     it('opens a draft and records the time', async () => {
       await service.publish(SELLER, 'listing-1');
 
-      expect(repository.update).toHaveBeenCalledWith(
+      expect(repository.publishDraft).toHaveBeenCalledWith(
         'listing-1',
-        {
-          status: ListingStatus.Open,
-          publishedAt: new Date('2026-10-05T03:00:00Z'),
-        },
-        undefined,
+        new Date('2026-10-05T03:00:00Z'),
         expect.any(Function),
       );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
@@ -326,7 +327,7 @@ describe('ListingsService', () => {
       const tx = { fake: true };
 
       await service.publish(SELLER, 'listing-1');
-      const within = repository.update.mock.calls[0][3] as (
+      const within = repository.publishDraft.mock.calls[0][2] as (
         tx: unknown,
       ) => Promise<void>;
       await within(tx);
@@ -338,6 +339,15 @@ describe('ListingsService', () => {
           payload: expect.objectContaining({ listingId: 'listing-1' }),
         }),
       );
+    });
+
+    it('refuses when another publish got there first', async () => {
+      repository.publishDraft.mockResolvedValue(false);
+
+      await expect(codeOf(service.publish(SELLER, 'listing-1'))).resolves.toBe(
+        'INVALID_LISTING_STATE',
+      );
+      expect(cache.bumpVersion).not.toHaveBeenCalled();
     });
 
     it.each([ListingStatus.Open, ListingStatus.Closed])(

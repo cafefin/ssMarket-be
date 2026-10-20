@@ -138,15 +138,13 @@ export class ListingsService {
     // The category may have been hidden after this draft was written.
     await this.assertCategoryOpen(listing.categoryId);
 
-    await this.listings.update(
-      id,
-      { status: ListingStatus.Open, publishedAt: new Date() },
-      undefined,
-      (tx) =>
-        this.outbox
-          .add(tx, listingPublishedEvent(listing))
-          .then(() => undefined),
+    const published = await this.listings.publishDraft(id, new Date(), (tx) =>
+      this.outbox.add(tx, listingPublishedEvent(listing)).then(() => undefined),
     );
+    if (!published) {
+      // Another request published (or changed) it since it was read.
+      throw this.invalidState('Only a draft can be published');
+    }
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
     return this.mustFind(id);
