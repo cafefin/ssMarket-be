@@ -9,6 +9,7 @@ import {
 import { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { normalizeForSearch } from '../../common/text/normalize.js';
+import { OutboxService } from '../../events/outbox.service.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { emailHandle } from '../listings/dto/listing-response.dto.js';
 import { ListingImagesService } from '../listings/listing-images.service.js';
@@ -25,6 +26,7 @@ import {
 import { mediaUrl, thumbnailKey } from '../listings/media-url.js';
 import { toTsQuery } from '../listings/search-query.js';
 import { UsersService } from '../users/users.service.js';
+import { campaignPublishedEvent } from './campaign-events.js';
 import {
   decodeCampaignCursor,
   encodeCampaignCursor,
@@ -74,6 +76,7 @@ export class CampaignsService {
     private readonly categories: CategoriesService,
     private readonly cache: CacheService,
     private readonly images: ListingImagesService,
+    private readonly outbox: OutboxService,
   ) {}
 
   /** Creates a draft round with its products. */
@@ -171,6 +174,10 @@ export class CampaignsService {
         { status: CampaignStatus.Open, publishedAt: now },
         CampaignStatus.Draft,
         { from: ListingStatus.Draft, to: ListingStatus.Open, publishedAt: now },
+        (tx) =>
+          this.outbox
+            .add(tx, campaignPublishedEvent(campaign))
+            .then(() => undefined),
       );
     } catch (error) {
       this.rethrowStateChange(error);

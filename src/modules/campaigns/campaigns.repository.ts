@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { type EntityManager, QueryFailedError, Repository } from 'typeorm';
+import type { Tx } from '../../database/transaction.js';
 import { ListingCombo } from '../listings/listing-combo.entity.js';
 import { Listing } from '../listings/listing.entity.js';
 import { ListingMode, ListingStatus } from '../listings/listings.constants.js';
@@ -322,6 +323,7 @@ export class CampaignsRepository {
     fields: Partial<CampaignFields>,
     expectedStatus: CampaignStatus,
     items?: { from: ListingStatus; to: ListingStatus; publishedAt?: Date },
+    within?: (tx: Tx) => Promise<void>,
   ): Promise<void> {
     await this.repository.manager.transaction(async (manager) => {
       const result = await manager.update(
@@ -344,6 +346,7 @@ export class CampaignsRepository {
           },
         );
       }
+      await within?.(manager);
     });
   }
 

@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import type { OutboxService } from '../../events/outbox.service.js';
 import type { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import type { CategoriesService } from '../categories/categories.service.js';
@@ -145,6 +146,7 @@ describe('CampaignsService', () => {
     getOrSet: vi.fn(),
   };
   const images = { copyAll: vi.fn(), removeFiles: vi.fn() };
+  const outbox = { add: vi.fn() };
   let service: CampaignsService;
 
   beforeEach(() => {
@@ -167,6 +169,7 @@ describe('CampaignsService', () => {
       categories as unknown as CategoriesService,
       cache as unknown as CacheService,
       images as unknown as ListingImagesService,
+      outbox as unknown as OutboxService,
     );
   });
 
@@ -527,8 +530,31 @@ describe('CampaignsService', () => {
         { status: CampaignStatus.Open, publishedAt: NOW },
         CampaignStatus.Draft,
         { from: ListingStatus.Draft, to: ListingStatus.Open, publishedAt: NOW },
+        expect.any(Function),
       );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes the round event inside the status transaction', async () => {
+      outbox.add.mockResolvedValue({});
+      const tx = { fake: true };
+
+      await service.publish(SELLER, 'campaign-1');
+      const within = repository.setStatus.mock.calls[0][4] as (
+        tx: unknown,
+      ) => Promise<void>;
+      await within(tx);
+
+      expect(outbox.add).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          type: 'campaign.opened',
+          payload: expect.objectContaining({
+            campaignId: 'campaign-1',
+            itemCount: 2,
+          }),
+        }),
+      );
     });
 
     it.each([CampaignStatus.Open, CampaignStatus.Closed])(
@@ -597,6 +623,8 @@ describe('CampaignsService', () => {
         { status: CampaignStatus.Closed, closedAt: NOW },
         CampaignStatus.Open,
       );
+      expect(repository.setStatus.mock.calls[0]).toHaveLength(3);
+      expect(outbox.add).not.toHaveBeenCalled();
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
     });
 

@@ -151,6 +151,7 @@ export class ListingsRepository {
     id: string,
     fields: Partial<ListingFields>,
     combos?: ComboFields[],
+    within?: (tx: Tx) => Promise<void>,
   ): Promise<void> {
     await this.repository.manager.transaction(async (manager) => {
       await manager.update(Listing, { id }, fields);
@@ -158,6 +159,7 @@ export class ListingsRepository {
         await manager.delete(ListingCombo, { listingId: id });
         await insertCombos(manager, id, combos);
       }
+      await within?.(manager);
     });
   }
 

@@ -8,6 +8,7 @@ import {
 import { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import type { Tx } from '../../database/transaction.js';
+import { OutboxService } from '../../events/outbox.service.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { UsersService } from '../users/users.service.js';
 import { emailHandle, ListingDetailDto } from './dto/listing-response.dto.js';
@@ -20,6 +21,7 @@ import {
   encodeCursor,
   type ListingCursor,
 } from './listing-cursor.js';
+import { listingPublishedEvent } from './listing-events.js';
 import {
   isListingOpen,
   type ListingInput,
@@ -68,6 +70,7 @@ export class ListingsService {
     private readonly users: UsersService,
     private readonly categories: CategoriesService,
     private readonly cache: CacheService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async create(sellerId: string, input: ListingInput): Promise<Listing> {
@@ -135,10 +138,15 @@ export class ListingsService {
     // The category may have been hidden after this draft was written.
     await this.assertCategoryOpen(listing.categoryId);
 
-    await this.listings.update(id, {
-      status: ListingStatus.Open,
-      publishedAt: new Date(),
-    });
+    await this.listings.update(
+      id,
+      { status: ListingStatus.Open, publishedAt: new Date() },
+      undefined,
+      (tx) =>
+        this.outbox
+          .add(tx, listingPublishedEvent(listing))
+          .then(() => undefined),
+    );
 
     await this.cache.bumpVersion(LISTINGS_CACHE_NAMESPACE);
     return this.mustFind(id);

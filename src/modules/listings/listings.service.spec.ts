@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import type { OutboxService } from '../../events/outbox.service.js';
 import type { CacheService } from '../../cache/cache.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import type { CategoriesService } from '../categories/categories.service.js';
@@ -48,6 +49,10 @@ function stored(overrides: Partial<Listing> = {}): Listing {
     acceptsPayOnDelivery: true,
     campaignId: null,
     campaign: null,
+    title: 'Loa',
+    unitPrice: 500_000,
+    seller: { name: 'Seller' },
+    category: { name: 'Đồ điện tử' },
     ...overrides,
   });
 }
@@ -89,6 +94,7 @@ describe('ListingsService', () => {
   const users = { getById: vi.fn(), hasBankProfile: vi.fn() };
   const categories = { findById: vi.fn() };
   const cache = { bumpVersion: vi.fn() };
+  const outbox = { add: vi.fn() };
   let service: ListingsService;
 
   beforeEach(() => {
@@ -104,6 +110,7 @@ describe('ListingsService', () => {
       users as unknown as UsersService,
       categories as unknown as CategoriesService,
       cache as unknown as CacheService,
+      outbox as unknown as OutboxService,
     );
   });
 
@@ -302,11 +309,35 @@ describe('ListingsService', () => {
     it('opens a draft and records the time', async () => {
       await service.publish(SELLER, 'listing-1');
 
-      expect(repository.update).toHaveBeenCalledWith('listing-1', {
-        status: ListingStatus.Open,
-        publishedAt: new Date('2026-10-05T03:00:00Z'),
-      });
+      expect(repository.update).toHaveBeenCalledWith(
+        'listing-1',
+        {
+          status: ListingStatus.Open,
+          publishedAt: new Date('2026-10-05T03:00:00Z'),
+        },
+        undefined,
+        expect.any(Function),
+      );
       expect(cache.bumpVersion).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes listing.published inside the update transaction', async () => {
+      outbox.add.mockResolvedValue({});
+      const tx = { fake: true };
+
+      await service.publish(SELLER, 'listing-1');
+      const within = repository.update.mock.calls[0][3] as (
+        tx: unknown,
+      ) => Promise<void>;
+      await within(tx);
+
+      expect(outbox.add).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          type: 'listing.published',
+          payload: expect.objectContaining({ listingId: 'listing-1' }),
+        }),
+      );
     });
 
     it.each([ListingStatus.Open, ListingStatus.Closed])(
@@ -481,6 +512,7 @@ describe('ListingsService', () => {
         users as unknown as UsersService,
         categories as unknown as CategoriesService,
         cacheStore as unknown as CacheService,
+        outbox as unknown as OutboxService,
       );
     });
 
