@@ -42,6 +42,22 @@ describe('GoogleChatClient', () => {
     });
     expect(init.body).toBe('{"text":"xin chào"}');
     expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.redirect).toBe('error');
+  });
+
+  it('fails a redirect without retrying', async () => {
+    // What Node's fetch throws for a 3xx with redirect: 'error'.
+    fetchFn.mockRejectedValue(
+      Object.assign(new TypeError('fetch failed'), {
+        cause: new Error('unexpected redirect'),
+      }),
+    );
+    expect(await client.send(URL_WITH_SECRET, 'x')).toEqual({
+      ok: false,
+      error: 'redirect refused',
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('retries 5xx after 1 s and 3 s', async () => {

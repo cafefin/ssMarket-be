@@ -273,6 +273,30 @@ describe('ChatDeliveryService.runDigest', () => {
     expect(repo.recordDelivery).not.toHaveBeenCalled();
   });
 
+  it('keeps the whole digest message within 4000 characters', async () => {
+    template = { enabled: true, template: `${'h'.repeat(900)}\n{{items}}` };
+    held = Array.from({ length: 20 }, (_, i) => ({
+      id: `id${i}`,
+      message: 'x'.repeat(190),
+    }));
+    await service.runDigest(at);
+    const text = client.send.mock.calls[0][1] as string;
+    expect(text.length).toBeLessThanOrEqual(4000);
+    expect(text.length).toBeGreaterThan(3500);
+    expect(text).toMatch(/… và \d+ tin khác$/);
+  });
+
+  it('shares the budget when the template repeats {{items}}', async () => {
+    template = { enabled: true, template: '{{items}}\n---\n{{items}}' };
+    held = Array.from({ length: 20 }, (_, i) => ({
+      id: `id${i}`,
+      message: 'x'.repeat(300),
+    }));
+    await service.runDigest(at);
+    const text = client.send.mock.calls[0][1] as string;
+    expect(text.length).toBeLessThanOrEqual(4000);
+  });
+
   it('sends the digest, then records it and marks every row in one transaction', async () => {
     held = Array.from({ length: 25 }, (_, i) => ({
       id: `id${i}`,

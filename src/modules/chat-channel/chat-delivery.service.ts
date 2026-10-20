@@ -7,7 +7,7 @@ import { chatVariables, sellerOf, startOfVietnamHour } from './chat-format.js';
 import { ChatOutcome } from './chat-delivery.entity.js';
 import { ChatRateLimiter } from './chat-rate-limiter.js';
 import { DIGEST_TYPE } from './chat-templates.js';
-import { digestItems } from './digest.js';
+import { DIGEST_MAX_CHARS, digestItems } from './digest.js';
 import { GoogleChatClient } from './google-chat.client.js';
 import { renderTemplate } from './template-renderer.js';
 
@@ -91,13 +91,22 @@ export class ChatDeliveryService {
       return;
     }
 
-    const message = renderTemplate(
-      template.template,
-      {
-        count: String(held.length),
-        items: digestItems(held.map((row) => row.message ?? '')),
-      },
-      new Set(['items']),
+    const render = (items: string): string =>
+      renderTemplate(
+        template.template,
+        { count: String(held.length), items },
+        new Set(['items']),
+      );
+    // The template's own text and every {{items}} share the message limit.
+    const occurrences = template.template.split('{{items}}').length - 1;
+    const budget = Math.floor(
+      (DIGEST_MAX_CHARS - render('').length) / Math.max(1, occurrences),
+    );
+    const message = render(
+      digestItems(
+        held.map((row) => row.message ?? ''),
+        budget,
+      ),
     );
     const result = await this.client.send(settings.webhookUrl, message);
     const row = {

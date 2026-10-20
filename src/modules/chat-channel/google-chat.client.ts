@@ -14,7 +14,10 @@ export class GoogleChatClient {
     @Inject(CHAT_SLEEP) private readonly sleep: (ms: number) => Promise<void>,
   ) {}
 
-  /** POST { text }; 5 s timeout; network error, 429 or 5xx retried after 1 s and 3 s. */
+  /**
+   * POST { text }; 5 s timeout; network error, 429 or 5xx retried after 1 s
+   * and 3 s. A redirect is refused and not retried.
+   */
   async send(webhookUrl: string, text: string): Promise<SendResult> {
     let error = '';
     for (let attempt = 0; attempt <= DELAYS_MS.length; attempt += 1) {
@@ -25,6 +28,7 @@ export class GoogleChatClient {
           headers: { 'content-type': 'application/json; charset=UTF-8' },
           body: JSON.stringify({ text }),
           signal: AbortSignal.timeout(5_000),
+          redirect: 'error',
         });
         if (response.ok) return { ok: true };
         error = `HTTP ${response.status}`;
@@ -35,7 +39,13 @@ export class GoogleChatClient {
         await response.body?.cancel().catch(() => undefined);
       } catch (caught) {
         // Never use the message: some errors (e.g. a bad URL) quote the webhook URL.
-        const failure = caught as Error & { cause?: { code?: string } };
+        const failure = caught as Error & {
+          cause?: { code?: string; message?: string };
+        };
+        // Node's fetch rejects a 3xx under redirect: 'error' with this cause.
+        if (failure.cause?.message === 'unexpected redirect') {
+          return { ok: false, error: 'redirect refused' };
+        }
         const code = failure.cause?.code;
         error =
           failure.name === 'TimeoutError'

@@ -32,4 +32,19 @@ describe('digestItems', () => {
     expect(result.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
     expect(result.endsWith('\n… và 1 tin khác')).toBe(true);
   });
+
+  it('keeps within a smaller budget', () => {
+    const result = digestItems(
+      Array.from({ length: 10 }, () => 'x'.repeat(50)),
+      200,
+    );
+    expect(result.length).toBeLessThanOrEqual(200);
+    expect(result.split('\n').at(-1)).toMatch(/^… và \d+ tin khác$/);
+  });
+
+  it('cuts one message to a smaller budget', () => {
+    const result = digestItems(['y'.repeat(500), 'z'], 100);
+    expect(result.length).toBeLessThanOrEqual(100);
+    expect(result.endsWith('\n… và 1 tin khác')).toBe(true);
+  });
 });
