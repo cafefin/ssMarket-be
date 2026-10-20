@@ -5,6 +5,8 @@ import {
   CHAT_TEMPLATE_TYPES,
   DEFAULT_TEMPLATES,
 } from '../src/modules/chat-channel/chat-templates.js';
+import { ChatChannelRepository } from '../src/modules/chat-channel/chat-channel.repository.js';
+import { ChatOutcome } from '../src/modules/chat-channel/chat-delivery.entity.js';
 import { signIn, type TestAgent } from './utils/auth.js';
 import { createTestApp } from './utils/create-test-app.js';
 import { startFakeChat } from './utils/fake-chat.js';
@@ -266,8 +268,8 @@ describe('Admin chat channel API', () => {
     await dataSource.query(
       `INSERT INTO chat_deliveries (event_type, outcome, message, created_at)
        SELECT 'campaign.opened', 'sent', 'm' || g,
-              CASE WHEN g IN (50, 51) THEN '2026-01-01T00:00:00.123Z'::timestamptz
-                   ELSE '2026-01-01T00:00:00.123Z'::timestamptz + ((100 - g) || ' seconds')::interval END
+              '2026-01-01T00:00:00.123Z'::timestamptz
+              + ((CASE WHEN g = 51 THEN 50 ELSE 100 - g END) || ' seconds')::interval
        FROM generate_series(1, 60) g`,
     );
     const ids: string[] = [];
@@ -284,5 +286,24 @@ describe('Admin chat channel API', () => {
     } while (cursor);
     expect(ids).toHaveLength(60);
     expect(new Set(ids).size).toBe(60);
+  });
+
+  it('stores delivery times with millisecond precision', async () => {
+    const repository = app.get(ChatChannelRepository);
+    for (let i = 0; i < 20; i += 1) {
+      await repository.recordDelivery({
+        eventId: null,
+        eventType: 'campaign.opened',
+        sellerId: null,
+        outcome: ChatOutcome.Sent,
+        message: `m${i}`,
+        error: null,
+      });
+    }
+    const rows = (await dataSource.query(
+      'SELECT (extract(microseconds from created_at)::int % 1000) AS rest FROM chat_deliveries',
+    )) as { rest: number }[];
+    expect(rows).toHaveLength(20);
+    expect(rows.every((r) => r.rest === 0)).toBe(true);
   });
 });
