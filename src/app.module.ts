@@ -16,6 +16,7 @@ import { CartModule } from './modules/cart/cart.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { isDevLoginEnabled } from './modules/dev-login/dev-login.enabled.js';
 import { DevLoginModule } from './modules/dev-login/dev-login.module.js';
+import { EventsModule } from './events/events.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
@@ -39,6 +40,7 @@ import { RedisModule } from './redis/redis.module.js';
     DatabaseModule,
     RedisModule,
     CacheModule,
+    EventsModule,
     StorageModule,
     BanksModule,
     CategoriesModule,
