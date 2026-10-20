@@ -188,7 +188,9 @@ its products, which are rows of `listings` with `campaign_id`.
   the transaction of the change**, so the event exists if and only if the
   change committed.
 - The worker (`src/main.worker.ts`, `WorkerModule`) is a separate process
-  with no HTTP server. `OutboxRelay` publishes unpublished rows to the topic
+  with no HTTP server. It ships in the same Docker image as the API; run that
+  image with the command `node dist/main.worker.js` (the default command
+  starts the API). `OutboxRelay` publishes unpublished rows to the topic
   exchange `ssmarket.events` (routing key = event type) and marks them
   published; it stops a batch at the first failed publish. `Maintenance`
   ticks every minute (digest, cleanup of old rows).
@@ -212,9 +214,25 @@ its products, which are rows of `listings` with `campaign_id`.
   consumers never read business tables.
 - Topology (`topology.ts`): queues `notifications.inapp` (`order.*`) and
   `notifications.gchat` (`campaign.*`, `listing.published`). A handler that
-  throws makes `RabbitClient.consume` log, then nack without requeue; the
-  message goes to `<queue>.retry` (30 s TTL) and back. After 5 failures it
-  goes to `<queue>.dlq`. Look at the DLQs in the management UI.
+  throws is caught by `QueueConsumer.handle`, which logs and nacks without
+  requeue; the message goes to `<queue>.retry` (30 s TTL) and back. After 5
+  failures `handle` copies it (body, headers, `messageId`, `type`,
+  `contentType`) to `<queue>.dlq` and acks it. The catch in
+  `RabbitClient.consume` only covers a failure of `handle` itself (for
+  example the DLQ publish), and nacks too. Look at the DLQs in the
+  management UI.
+- Delivery tags belong to one channel. `RabbitClient` stamps each message
+  with a channel generation, bumped in the channel `setup` (which runs on
+  every new channel, before consumers are re-registered) and when the
+  wrapper closes; `ack`/`reject` of a message from an older generation do
+  nothing but log, because the broker already requeued it when that channel
+  closed. `ack`/`reject` never throw, and `handle` acks outside the
+  handler's `try`, so a failed ack is never retried or dead-lettered.
+- Shutdown (`WorkerRunner.beforeApplicationShutdown`): stop the ticker and
+  the relay, then every consumer (cancel, then wait for the messages in
+  progress; a failed cancel is logged and the wait still happens), then
+  close the client. A failure at any step is logged and never skips the
+  next one.
 - Handlers are plain service methods registered per queue in `EVENT_HANDLERS`
   (`WorkerModule`). Delivery is at least once, so a handler must be
   **idempotent by event id**.
@@ -263,8 +281,16 @@ its products, which are rows of `listings` with `campaign_id`.
   `chat-templates.ts` and are seeded by the migration; keep the two equal.
 - The hourly digest (`runDigest`, started by `Maintenance`) sends the messages
   held back by a limit in one message; a Redis lock per hour makes several
-  workers run it once. Test sends run in the API request, are not counted
-  against limits and are prefixed `[Thử]`.
+  workers run it once. A worker that takes the lock and then crashes skips
+  that hour's digest; the rows stay pending and the next hour's 24 h window
+  picks them up. The digest fits in 4000 characters: the template's own
+  text is subtracted from the budget for `{{items}}`.
+- Delivery to Google Chat is at least once: a send that succeeded but whose
+  log row was not written (a crash in between) is redelivered, may then be
+  held by a limit and sent again in the digest. Redirects are refused and
+  not retried.
+- Test sends run in the API request, are not counted against limits and are
+  prefixed `[Thử]`.
 - `chat_channel_settings.updated_by`, `chat_templates.updated_by` and
   `chat_deliveries.seller_id` have **no foreign key on purpose**: the record
   outlives the person, and a FK to `users` would let `TRUNCATE users CASCADE`
