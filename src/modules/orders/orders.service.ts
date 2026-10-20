@@ -4,6 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { OrderEventType } from '../../events/domain-events.js';
+import { OutboxService } from '../../events/outbox.service.js';
 import { DomainException } from '../../common/errors/domain.exception.js';
 import { TransactionRunner, type Tx } from '../../database/transaction.js';
 import { BanksService } from '../banks/banks.service.js';
@@ -24,6 +26,7 @@ import {
   type OrderPageDto,
   type OrderQrDto,
 } from './dto/order-response.dto.js';
+import { orderEvent } from './order-events.js';
 import { generateOrderCode } from './order-code.js';
 import { decodeOrderCursor, encodeOrderCursor } from './order-cursor.js';
 import {
@@ -105,6 +108,7 @@ export class OrdersService {
     private readonly users: UsersService,
     private readonly banks: BanksService,
     private readonly transactions: TransactionRunner,
+    private readonly outbox: OutboxService,
   ) {}
 
   /**
@@ -263,8 +267,9 @@ export class OrdersService {
       );
 
       const qr = input.paymentMethod === PaymentMethod.PrepaidQr;
+      const total = lines.reduce((sum, line) => sum + line.lineTotal, 0);
       await this.orders.replaceLines(tx, id, lines, {
-        totalAmount: lines.reduce((sum, line) => sum + line.lineTotal, 0),
+        totalAmount: total,
         paymentMethod: input.paymentMethod,
         deliveryLocation,
         note: input.note?.trim() || null,
@@ -272,46 +277,75 @@ export class OrdersService {
         sellerBankAccountNumber: qr ? first.seller.bankAccountNumber : null,
         sellerBankAccountName: qr ? first.seller.bankAccountName : null,
       });
+      await this.outbox.add(
+        tx,
+        orderEvent(
+          'order.edited',
+          { ...order, totalAmount: total },
+          OrderActor.Buyer,
+        ),
+      );
     });
     await this.listings.invalidateCache();
     return this.getForParticipant(buyerId, id);
   }
 
   reportPayment(buyerId: string, id: string): Promise<OrderDetailDto> {
-    return this.change(buyerId, id, OrderActor.Buyer, (order) =>
-      Promise.resolve({
-        paymentStatus: nextPaymentStatus(order, 'report'),
-        reportedAt: new Date(),
-      }),
+    return this.change(
+      buyerId,
+      id,
+      OrderActor.Buyer,
+      'order.payment_reported',
+      (order) =>
+        Promise.resolve({
+          paymentStatus: nextPaymentStatus(order, 'report'),
+          reportedAt: new Date(),
+        }),
     );
   }
 
   confirmPayment(sellerId: string, id: string): Promise<OrderDetailDto> {
-    return this.change(sellerId, id, OrderActor.Seller, (order) =>
-      Promise.resolve({
-        paymentStatus: nextPaymentStatus(order, 'confirm'),
-        paidAt: new Date(),
-      }),
+    return this.change(
+      sellerId,
+      id,
+      OrderActor.Seller,
+      'order.payment_confirmed',
+      (order) =>
+        Promise.resolve({
+          paymentStatus: nextPaymentStatus(order, 'confirm'),
+          paidAt: new Date(),
+        }),
     );
   }
 
   rejectPayment(sellerId: string, id: string): Promise<OrderDetailDto> {
-    return this.change(sellerId, id, OrderActor.Seller, (order) =>
-      Promise.resolve({
-        paymentStatus: nextPaymentStatus(order, 'reject'),
-        reportedAt: null,
-      }),
+    return this.change(
+      sellerId,
+      id,
+      OrderActor.Seller,
+      'order.payment_rejected',
+      (order) =>
+        Promise.resolve({
+          paymentStatus: nextPaymentStatus(order, 'reject'),
+          reportedAt: null,
+        }),
     );
   }
 
   deliver(sellerId: string, id: string): Promise<OrderDetailDto> {
-    return this.change(sellerId, id, OrderActor.Seller, (order) => {
-      assertCanDeliver(order);
-      return Promise.resolve({
-        fulfillmentStatus: FulfillmentStatus.Delivered,
-        deliveredAt: new Date(),
-      });
-    });
+    return this.change(
+      sellerId,
+      id,
+      OrderActor.Seller,
+      'order.delivered',
+      (order) => {
+        assertCanDeliver(order);
+        return Promise.resolve({
+          fulfillmentStatus: FulfillmentStatus.Delivered,
+          deliveredAt: new Date(),
+        });
+      },
+    );
   }
 
   async cancel(
@@ -324,6 +358,7 @@ export class OrdersService {
       userId,
       id,
       null,
+      'order.cancelled',
       async (order, actor, tx) => {
         if (actor === OrderActor.Seller && !trimmed) {
           throw new BadRequestException(
@@ -366,6 +401,7 @@ export class OrdersService {
     userId: string,
     id: string,
     allowed: OrderActor | null,
+    eventType: OrderEventType,
     decide: (order: Order, actor: OrderActor, tx: Tx) => Promise<OrderChanges>,
   ): Promise<OrderDetailDto> {
     await this.transactions.run(async (tx) => {
@@ -379,7 +415,12 @@ export class OrdersService {
           `Only the ${allowed} of this order can do that`,
         );
       }
-      await this.orders.update(tx, id, await decide(order, actor, tx));
+      const changes = await decide(order, actor, tx);
+      await this.orders.update(tx, id, changes);
+      await this.outbox.add(
+        tx,
+        orderEvent(eventType, order, actor, changes.cancelReason ?? null),
+      );
     });
     return this.getForParticipant(userId, id);
   }
@@ -570,34 +611,37 @@ export class OrdersService {
           const ids: string[] = [];
           for (const plan of plans) {
             const qr = plan.paymentMethod === PaymentMethod.PrepaidQr;
-            ids.push(
-              await this.orders.insert(
-                tx,
-                {
-                  code: generateOrderCode(),
-                  campaignId: plan.campaignId,
-                  buyerId,
-                  sellerId: plan.seller.id,
-                  isPreorder: plan.campaignId !== null,
-                  paymentMethod: plan.paymentMethod,
-                  deliveryLocation: plan.deliveryLocation,
-                  note: plan.note,
-                  sellerBankBin: qr ? plan.seller.bankBin : null,
-                  sellerBankAccountNumber: qr
-                    ? plan.seller.bankAccountNumber
-                    : null,
-                  sellerBankAccountName: qr
-                    ? plan.seller.bankAccountName
-                    : null,
-                  totalAmount: plan.lines.reduce(
-                    (sum, line) => sum + line.lineTotal,
-                    0,
-                  ),
-                  // Set here, in milliseconds, so list cursors compare exactly.
-                  createdAt: new Date(),
-                },
-                plan.lines,
-              ),
+            const orderId = await this.orders.insert(
+              tx,
+              {
+                code: generateOrderCode(),
+                campaignId: plan.campaignId,
+                buyerId,
+                sellerId: plan.seller.id,
+                isPreorder: plan.campaignId !== null,
+                paymentMethod: plan.paymentMethod,
+                deliveryLocation: plan.deliveryLocation,
+                note: plan.note,
+                sellerBankBin: qr ? plan.seller.bankBin : null,
+                sellerBankAccountNumber: qr
+                  ? plan.seller.bankAccountNumber
+                  : null,
+                sellerBankAccountName: qr ? plan.seller.bankAccountName : null,
+                totalAmount: plan.lines.reduce(
+                  (sum, line) => sum + line.lineTotal,
+                  0,
+                ),
+                // Set here, in milliseconds, so list cursors compare exactly.
+                createdAt: new Date(),
+              },
+              plan.lines,
+            );
+            ids.push(orderId);
+            // The insert just happened in this transaction, so the row is there.
+            const placed = await this.orders.findWithRelations(tx, orderId);
+            await this.outbox.add(
+              tx,
+              orderEvent('order.placed', placed as Order, OrderActor.Buyer),
             );
           }
           await withinTransaction?.(tx);

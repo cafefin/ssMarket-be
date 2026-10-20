@@ -46,8 +46,12 @@ function orderWith(
 ): Order {
   return {
     id: 'order-1',
+    code: 'SS-ABC123',
     buyerId: BUYER,
     sellerId: SELLER,
+    totalAmount: 15000,
+    buyer: { name: 'Buyer Name' },
+    seller: { name: 'Seller Name' },
     campaignId: 'camp-1',
     isPreorder: true,
     paymentStatus: PaymentStatus.Unpaid,
@@ -74,6 +78,9 @@ function setup(order: Order, listings: Listing[]) {
     replaceLines: vi.fn().mockResolvedValue(undefined),
     findByIdWithRelations: vi.fn().mockResolvedValue(order),
     findActivePreorder: vi.fn().mockResolvedValue(null),
+    update: vi.fn().mockResolvedValue(undefined),
+    insert: vi.fn().mockResolvedValue('order-1'),
+    findWithRelations: vi.fn().mockResolvedValue(order),
   };
   const listingsService = {
     findByIds: vi.fn().mockResolvedValue(listings),
@@ -83,24 +90,33 @@ function setup(order: Order, listings: Listing[]) {
         Promise.resolve(listings.find((item) => item.id === id) ?? null),
       ),
     invalidateCache: vi.fn().mockResolvedValue(undefined),
+    reserveStock: vi.fn().mockResolvedValue([]),
+    releaseStock: vi.fn().mockResolvedValue(undefined),
   };
-  const users = { hasBankProfile: vi.fn().mockReturnValue(true) };
+  const users = {
+    hasBankProfile: vi.fn().mockReturnValue(true),
+    getById: vi.fn().mockResolvedValue({ deliveryLocation: 'Tầng 7' }),
+    updateProfile: vi.fn().mockResolvedValue(undefined),
+  };
   const banks = { findByBin: vi.fn().mockReturnValue(null) };
+  const tx = { name: 'the-tx' };
   const transactions = {
     run: vi
       .fn()
-      .mockImplementation((work: (tx: object) => unknown) => work({})),
+      .mockImplementation((work: (tx: object) => unknown) => work(tx)),
   };
+  const outbox = { add: vi.fn().mockResolvedValue({}) };
   const service = new OrdersService(
     orders as never,
     listingsService as never,
     users as never,
     banks as never,
     transactions as never,
+    outbox as never,
   );
   // The response shape has its own tests; here only the write matters.
   vi.spyOn(service, 'getForParticipant').mockResolvedValue(undefined as never);
-  return { service, orders, listingsService };
+  return { service, orders, listingsService, outbox, tx };
 }
 
 const input = (lines: Array<[string, string]>) => ({
@@ -288,5 +304,112 @@ describe('OrdersService.createMany planning', () => {
       details: { orderId: 'existing' },
     });
     expect(orders.findActivePreorder).toHaveBeenCalledWith('camp-1', BUYER);
+  });
+});
+
+describe('OrdersService events', () => {
+  const eventOf = (outbox: { add: ReturnType<typeof vi.fn> }, call = 0) =>
+    outbox.add.mock.calls[call] as [
+      unknown,
+      { type: string; payload: Record<string, unknown> },
+    ];
+
+  it.each([
+    ['reportPayment', BUYER, 'order.payment_reported', 'buyer'],
+    ['confirmPayment', SELLER, 'order.payment_confirmed', 'seller'],
+    ['rejectPayment', SELLER, 'order.payment_rejected', 'seller'],
+    ['deliver', SELLER, 'order.delivered', 'seller'],
+  ] as const)(
+    '%s writes %s in the same transaction',
+    async (method, user, type, actor) => {
+      const order = orderWith([{ listingId: 'a', quantity: '1' }]);
+      order.paymentStatus =
+        method === 'reportPayment' || method === 'deliver'
+          ? PaymentStatus.Unpaid
+          : PaymentStatus.Reported;
+      order.paymentMethod = PaymentMethod.PrepaidQr;
+      const { service, outbox, tx } = setup(order, []);
+
+      await service[method](user, 'order-1');
+
+      expect(outbox.add).toHaveBeenCalledTimes(1);
+      const [usedTx, event] = eventOf(outbox);
+      expect(usedTx).toBe(tx);
+      expect(event.type).toBe(type);
+      expect(event.payload).toMatchObject({ orderId: 'order-1', actor });
+    },
+  );
+
+  it('writes the seller reason on cancel', async () => {
+    const order = orderWith([{ listingId: 'a', quantity: '1' }]);
+    const { service, outbox } = setup(order, []);
+
+    await service.cancel(SELLER, 'order-1', ' Hết hàng ');
+
+    const [, event] = eventOf(outbox);
+    expect(event.type).toBe('order.cancelled');
+    expect(event.payload).toMatchObject({
+      actor: 'seller',
+      reason: 'Hết hàng',
+    });
+  });
+
+  it('writes a null reason when the buyer cancels without one', async () => {
+    const order = orderWith([{ listingId: 'a', quantity: '1' }]);
+    const { service, outbox } = setup(order, []);
+
+    await service.cancel(BUYER, 'order-1');
+
+    const [, event] = eventOf(outbox);
+    expect(event.payload).toMatchObject({ actor: 'buyer', reason: null });
+  });
+
+  it('writes order.edited with the new total', async () => {
+    const order = orderWith([{ listingId: 'a', quantity: '2.000' }]);
+    const { service, outbox } = setup(order, [
+      listing('a', { unitPrice: 20000 }),
+    ]);
+
+    await service.edit(BUYER, 'order-1', input([['a', '4']]));
+
+    const [, event] = eventOf(outbox);
+    expect(event.type).toBe('order.edited');
+    expect(event.payload).toMatchObject({ total: 60000, actor: 'buyer' });
+  });
+
+  it('writes one order.placed per order of a checkout', async () => {
+    const placed = orderWith([]);
+    const { service, orders, outbox } = setup(placed, [
+      listing('a'),
+      listing('s', { campaignId: null, mode: ListingMode.InStock }),
+    ]);
+    orders.insert.mockResolvedValueOnce('o-1').mockResolvedValueOnce('o-2');
+    orders.findWithRelations
+      .mockResolvedValueOnce(Object.assign({}, placed, { id: 'o-1' }))
+      .mockResolvedValueOnce(Object.assign({}, placed, { id: 'o-2' }));
+    const request = (id: string) => ({
+      lines: [{ listingId: id, quantity: '1' }],
+      paymentMethod: PaymentMethod.PayOnDelivery,
+      deliveryLocation: 'Tầng 7',
+    });
+
+    const ids = await service.createMany(BUYER, [request('a'), request('s')]);
+
+    expect(ids).toEqual(['o-1', 'o-2']);
+    expect(outbox.add).toHaveBeenCalledTimes(2);
+    expect(eventOf(outbox, 0)[1]).toMatchObject({
+      type: 'order.placed',
+      payload: { orderId: 'o-1', actor: 'buyer' },
+    });
+    expect(eventOf(outbox, 1)[1].payload).toMatchObject({ orderId: 'o-2' });
+  });
+
+  it('writes nothing when the update fails', async () => {
+    const order = orderWith([{ listingId: 'a', quantity: '1' }]);
+    const { service, orders, outbox } = setup(order, []);
+    orders.update.mockRejectedValue(new Error('boom'));
+
+    await expect(service.deliver(SELLER, 'order-1')).rejects.toThrow('boom');
+    expect(outbox.add).not.toHaveBeenCalled();
   });
 });

@@ -103,6 +103,15 @@ export class OrdersRepository {
     });
   }
 
+  /** An order with its relations, read inside the caller's transaction (no lock). */
+  findWithRelations(tx: Tx, id: string): Promise<Order | null> {
+    return tx.findOne(Order, {
+      where: { id },
+      relations: RELATIONS,
+      order: LINE_ORDER,
+    });
+  }
+
   /** The buyer's live order in a pre-order round, if any. */
   findActivePreorder(
     campaignId: string,
