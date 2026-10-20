@@ -15,6 +15,7 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: [
         'src/main.ts',
+        'src/main.worker.ts',
         'src/**/*.module.ts',
         'src/**/*.spec.ts',
         'src/database/data-source.ts',

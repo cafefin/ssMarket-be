@@ -1,4 +1,4 @@
-import { Global, Inject, Module, type OnModuleDestroy } from '@nestjs/common';
+import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 import type { EnvironmentVariables } from '../config/env.validation.js';
@@ -18,10 +18,10 @@ import { RedisHealth } from './redis.health.js';
   ],
   exports: [REDIS_CLIENT, RedisHealth],
 })
-export class RedisModule implements OnModuleDestroy {
+export class RedisModule implements OnApplicationShutdown {
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
-  async onModuleDestroy(): Promise<void> {
+  async onApplicationShutdown(): Promise<void> {
     await this.redis.quit();
   }
 }

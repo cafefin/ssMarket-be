@@ -19,6 +19,8 @@
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run test/ --no-file-parallelism",
     "dev": "nest start --watch",
+    "dev:worker": "node --watch --enable-source-maps dist/main.worker.js",
+    "start:worker": "node dist/main.worker.js",
     "typecheck": "tsc --noEmit",
     "typeorm": "typeorm -d dist/database/data-source.js",
     "migration:run": "nest build && pnpm typeorm migration:run",
