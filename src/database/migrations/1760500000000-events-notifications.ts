@@ -58,6 +58,10 @@ export class EventsNotifications1760500000000 implements MigrationInterface {
       `CREATE INDEX "IDX_notifications_created_at" ON "notifications" ("created_at")`,
     );
 
+    // updated_by has no foreign key on purpose, like chat_deliveries.seller_id:
+    // a foreign key to users would let TRUNCATE users CASCADE empty these
+    // seeded config tables, and the record of who changed a setting outlives
+    // the person.
     await queryRunner.query(`
       CREATE TABLE "chat_channel_settings" (
         "id" smallint NOT NULL,
@@ -70,9 +74,7 @@ export class EventsNotifications1760500000000 implements MigrationInterface {
         CONSTRAINT "PK_chat_channel_settings" PRIMARY KEY ("id"),
         CONSTRAINT "CHK_chat_settings_single" CHECK ("id" = 1),
         CONSTRAINT "CHK_chat_settings_max" CHECK ("max_per_hour" IS NULL OR "max_per_hour" BETWEEN 1 AND 60),
-        CONSTRAINT "CHK_chat_settings_cooldown" CHECK ("seller_cooldown_minutes" BETWEEN 0 AND 1440),
-        CONSTRAINT "FK_chat_settings_updated_by" FOREIGN KEY ("updated_by")
-          REFERENCES "users" ("id") ON DELETE SET NULL
+        CONSTRAINT "CHK_chat_settings_cooldown" CHECK ("seller_cooldown_minutes" BETWEEN 0 AND 1440)
       )
     `);
     await queryRunner.query(
@@ -86,9 +88,7 @@ export class EventsNotifications1760500000000 implements MigrationInterface {
         "template" varchar(1000) NOT NULL,
         "updated_at" timestamptz NOT NULL DEFAULT now(),
         "updated_by" uuid,
-        CONSTRAINT "PK_chat_templates" PRIMARY KEY ("event_type"),
-        CONSTRAINT "FK_chat_templates_updated_by" FOREIGN KEY ("updated_by")
-          REFERENCES "users" ("id") ON DELETE SET NULL
+        CONSTRAINT "PK_chat_templates" PRIMARY KEY ("event_type")
       )
     `);
     await queryRunner.query(
