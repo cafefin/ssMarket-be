@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, LessThan, Repository } from 'typeorm';
+import type { CreatedAtCursor } from '../../common/pagination/created-at-cursor.js';
 import { Notification } from './notification.entity.js';
 
 export interface NewNotification {
@@ -71,5 +72,52 @@ export class NotificationsRepository {
       [row.recipientId, row.orderId],
     );
     return existing.length > 0;
+  }
+
+  list(
+    recipientId: string,
+    cursor: CreatedAtCursor | null,
+    limit: number,
+  ): Promise<Notification[]> {
+    const query = this.repository
+      .createQueryBuilder('n')
+      .where('n.recipient_id = :recipientId', { recipientId });
+    if (cursor) {
+      query.andWhere('(n.created_at, n.id) < (:createdAt, :id)', {
+        createdAt: cursor.createdAt,
+        id: cursor.id,
+      });
+    }
+    return query
+      .orderBy('n.created_at', 'DESC')
+      .addOrderBy('n.id', 'DESC')
+      .limit(limit)
+      .getMany();
+  }
+
+  countUnread(recipientId: string): Promise<number> {
+    return this.repository.count({ where: { recipientId, readAt: IsNull() } });
+  }
+
+  /** False when no such notification belongs to the recipient. */
+  async markRead(recipientId: string, id: string, at: Date): Promise<boolean> {
+    const [, affected]: [unknown, number] = await this.repository.query(
+      `UPDATE notifications SET read_at = COALESCE(read_at, $3)
+       WHERE id = $2 AND recipient_id = $1`,
+      [recipientId, id, at],
+    );
+    return affected > 0;
+  }
+
+  async markAllRead(recipientId: string, at: Date): Promise<void> {
+    await this.repository.update(
+      { recipientId, readAt: IsNull() },
+      { readAt: at },
+    );
+  }
+
+  async deleteCreatedBefore(before: Date): Promise<number> {
+    const result = await this.repository.delete({ createdAt: LessThan(before) });
+    return result.affected ?? 0;
   }
 }
