@@ -7,6 +7,10 @@ import { AppModule } from '../../src/app.module.js';
 import { configureApp } from '../../src/app.setup.js';
 import { UserThrottlerGuard } from '../../src/common/guards/user-throttler.guard.js';
 import type { GoogleIdentity } from '../../src/modules/auth/auth.types.js';
+import {
+  CHAT_FETCH,
+  CHAT_SLEEP,
+} from '../../src/modules/chat-channel/google-chat.client.js';
 import { GoogleAuthGuard } from '../../src/modules/auth/guards/google-auth.guard.js';
 
 /**
@@ -14,10 +18,11 @@ import { GoogleAuthGuard } from '../../src/modules/auth/guards/google-auth.guard
  * is replaced: the guard puts `identity.current` on the request, exactly as
  * Passport would after a real sign-in.
  */
-export async function createTestApp(identity: {
-  current: GoogleIdentity | null;
-}): Promise<NestExpressApplication> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+export async function createTestApp(
+  identity: { current: GoogleIdentity | null },
+  options: { chatFetch?: typeof fetch } = {},
+): Promise<NestExpressApplication> {
+  const builder = Test.createTestingModule({ imports: [AppModule] })
     .overrideGuard(GoogleAuthGuard)
     .useValue({
       canActivate: (context: ExecutionContext) => {
@@ -30,7 +35,13 @@ export async function createTestApp(identity: {
     .useValue({ canActivate: () => true })
     .overrideGuard(UserThrottlerGuard)
     .useValue({ canActivate: () => true })
-    .compile();
+    // Retries never wait in tests.
+    .overrideProvider(CHAT_SLEEP)
+    .useValue(async () => {});
+  if (options.chatFetch) {
+    builder.overrideProvider(CHAT_FETCH).useValue(options.chatFetch);
+  }
+  const moduleRef = await builder.compile();
 
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);

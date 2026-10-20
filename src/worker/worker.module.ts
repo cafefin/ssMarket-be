@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { validateWorkerEnv } from '../config/env.validation.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { EventsModule } from '../events/events.module.js';
+import { ChatChannelModule } from '../modules/chat-channel/chat-channel.module.js';
 import { NotificationsModule } from '../modules/notifications/notifications.module.js';
 import { NotificationsService } from '../modules/notifications/notifications.service.js';
 import { RedisModule } from '../redis/redis.module.js';
@@ -20,7 +21,7 @@ import { WorkerRunner } from './worker.runner.js';
     RedisModule,
     EventsModule,
     NotificationsModule,
-    // ChatChannelModule (Task 11) is added here.
+    ChatChannelModule,
   ],
   providers: [
     RabbitClient,
