@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { QueueConsumer } from './queue-consumer.js';
 import { WorkerRunner } from './worker.runner.js';
 import type { RabbitClient } from './rabbit.client.js';
 import type { OutboxRelay } from './outbox-relay.js';
@@ -62,5 +63,29 @@ describe('WorkerRunner', () => {
       'cancel tag-b',
       'close',
     ]);
+  });
+
+  it('still closes the client when a consumer fails to stop', async () => {
+    const logError = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => {});
+    const runner = new WorkerRunner(
+      rabbit as unknown as RabbitClient,
+      relay as unknown as OutboxRelay,
+      maintenance as unknown as Maintenance,
+      { a: async () => {}, b: async () => {} },
+    );
+    await runner.onApplicationBootstrap();
+    calls.length = 0;
+    vi.spyOn(QueueConsumer.prototype, 'stop').mockRejectedValueOnce(
+      new Error('stuck'),
+    );
+    rabbit.close.mockRejectedValueOnce(new Error('close failed'));
+
+    await expect(runner.beforeApplicationShutdown()).resolves.toBeUndefined();
+    expect(rabbit.close).toHaveBeenCalled();
+    const logged = logError.mock.calls.map((call) => String(call[0]));
+    expect(logged.some((text) => text.includes('stuck'))).toBe(true);
+    expect(logged.some((text) => text.includes('close failed'))).toBe(true);
   });
 });

@@ -41,8 +41,21 @@ export class WorkerRunner
   async beforeApplicationShutdown(): Promise<void> {
     await this.maintenance.stop();
     await this.relay.stop();
-    await Promise.all(this.consumers.map((consumer) => consumer.stop()));
+    const stopped = await Promise.allSettled(
+      this.consumers.map((consumer) => consumer.stop()),
+    );
+    for (const result of stopped) {
+      if (result.status === 'rejected') {
+        this.logger.error(
+          `A consumer failed to stop: ${(result.reason as Error).message}`,
+        );
+      }
+    }
     this.consumers = [];
-    await this.rabbit.close();
+    try {
+      await this.rabbit.close();
+    } catch (error) {
+      this.logger.error(`Closing RabbitMQ failed: ${(error as Error).message}`);
+    }
   }
 }

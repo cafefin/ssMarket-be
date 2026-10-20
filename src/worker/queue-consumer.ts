@@ -32,7 +32,13 @@ export class QueueConsumer {
   /** Stops taking messages, then waits for those in progress. */
   async stop(): Promise<void> {
     if (this.tag !== undefined) {
-      await this.rabbit.cancel(this.tag);
+      try {
+        await this.rabbit.cancel(this.tag);
+      } catch (error) {
+        this.logger.error(
+          `${this.queue}: cancel failed: ${(error as Error).message}`,
+        );
+      }
       this.tag = undefined;
     }
     await Promise.allSettled(this.inFlight);
@@ -43,17 +49,11 @@ export class QueueConsumer {
     const event = parseEnvelope(message.content.toString('utf8'));
     if (!event) {
       this.logger.error(`${this.queue}: unreadable message, sent to the DLQ`);
-      await this.rabbit.sendToQueue(
-        deadLetterQueue(this.queue),
-        message.content,
-        message.headers,
-      );
-      this.rabbit.ack(message);
+      await this.deadLetter(message);
       return;
     }
     try {
       await this.handler(event);
-      this.rabbit.ack(message);
     } catch (error) {
       const previous = failedAttempts(message.headers, this.queue);
       const reason = (error as Error).message;
@@ -66,14 +66,23 @@ export class QueueConsumer {
         this.logger.error(
           `${this.queue}: ${event.type} ${event.id} failed ${MAX_ATTEMPTS} times, sent to the DLQ: ${reason}`,
         );
-        await this.rabbit.sendToQueue(
-          deadLetterQueue(this.queue),
-          message.content,
-          message.headers,
-        );
-        this.rabbit.ack(message);
+        await this.deadLetter(message);
       }
+      return;
     }
+    // Outside the try: a failed ack is not a handler failure.
+    this.rabbit.ack(message);
+  }
+
+  /** Copies the message (body and properties) to the DLQ, then acks it. */
+  private async deadLetter(message: RabbitMessage): Promise<void> {
+    await this.rabbit.sendToQueue(deadLetterQueue(this.queue), message.content, {
+      headers: message.headers,
+      messageId: message.messageId,
+      type: message.type,
+      contentType: message.contentType,
+    });
+    this.rabbit.ack(message);
   }
 
   private track(work: Promise<void>): Promise<void> {

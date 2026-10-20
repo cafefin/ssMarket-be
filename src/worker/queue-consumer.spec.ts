@@ -17,7 +17,18 @@ const message = (
 ): RabbitMessage => ({
   content: Buffer.from(body),
   headers,
+  messageId: 'e-1',
+  type: 'order.placed',
+  contentType: 'application/json',
+  generation: 1,
   raw: {} as never,
+});
+
+const dlqProperties = (headers?: Record<string, unknown>) => ({
+  headers,
+  messageId: 'e-1',
+  type: 'order.placed',
+  contentType: 'application/json',
 });
 
 describe('QueueConsumer', () => {
@@ -79,7 +90,7 @@ describe('QueueConsumer', () => {
     expect(rabbit.sendToQueue).toHaveBeenCalledWith(
       `${QUEUE}.dlq`,
       m.content,
-      headers,
+      dlqProperties(headers),
     );
     expect(rabbit.ack).toHaveBeenCalledWith(m);
     expect(rabbit.reject).not.toHaveBeenCalled();
@@ -93,7 +104,7 @@ describe('QueueConsumer', () => {
     expect(rabbit.sendToQueue).toHaveBeenCalledWith(
       `${QUEUE}.dlq`,
       m.content,
-      undefined,
+      dlqProperties(undefined),
     );
     expect(rabbit.ack).toHaveBeenCalledWith(m);
   });
@@ -117,6 +128,43 @@ describe('QueueConsumer', () => {
     finish();
     await stopping;
     expect(stopped).toBe(true);
+    expect(rabbit.ack).toHaveBeenCalled();
+  });
+
+  it('does not treat a failing ack as a handler failure', async () => {
+    handler.mockResolvedValue(undefined);
+    rabbit.ack.mockImplementation(() => {
+      throw new Error('ack failed');
+    });
+    await expect(make().handle(message(JSON.stringify(envelope)))).rejects.toThrow(
+      'ack failed',
+    );
+    expect(rabbit.reject).not.toHaveBeenCalled();
+    expect(rabbit.sendToQueue).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('stop still drains work in progress when cancel fails', async () => {
+    let finish!: () => void;
+    handler.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    rabbit.cancel.mockRejectedValue(new Error('channel closed'));
+    const consumer = make();
+    await consumer.start();
+    const onMessage = rabbit.consume.mock.calls[0][1] as (
+      m: RabbitMessage,
+    ) => Promise<void>;
+    void onMessage(message(JSON.stringify(envelope)));
+
+    let stopped = false;
+    const stopping = consumer.stop().then(() => (stopped = true));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stopped).toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('channel closed'),
+    );
+    finish();
+    await stopping;
     expect(rabbit.ack).toHaveBeenCalled();
   });
 });

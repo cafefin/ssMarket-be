@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     consume: vi.fn(),
     nack: vi.fn(),
     ack: vi.fn(),
+    sendToQueue: vi.fn().mockResolvedValue(true),
   };
   const connection = {
     on: vi.fn(),
@@ -96,5 +97,182 @@ describe('RabbitClient', () => {
     const text = String(logError.mock.calls[0]?.[0]);
     expect(text).toContain('notify.q');
     expect(text).toContain('boom');
+  });
+
+  const topologyChannel = () => ({
+    assertExchange: vi.fn().mockResolvedValue({}),
+    assertQueue: vi.fn().mockResolvedValue({}),
+    bindQueue: vi.fn().mockResolvedValue({}),
+  });
+
+  /** Runs the channel setup, as amqp-connection-manager does on every new channel. */
+  const newChannel = async (): Promise<void> => {
+    const options = (
+      mocks.connection.createChannel.mock.calls.at(-1) as unknown as [
+        { setup: (c: unknown) => Promise<void> },
+      ]
+    )[0];
+    await options.setup(topologyChannel());
+  };
+
+  const captureDelivery = () => {
+    const box: { deliver?: (raw: unknown) => void } = {};
+    mocks.channel.consume.mockImplementation(
+      (_q: string, cb: (raw: unknown) => void) => {
+        box.deliver = cb;
+        return Promise.resolve({ consumerTag: 't' });
+      },
+    );
+    return box;
+  };
+
+  const rawMessage = () => ({
+    content: Buffer.from('x'),
+    properties: {
+      headers: { h: 1 },
+      messageId: 'm-1',
+      type: 'order.placed',
+      contentType: 'application/json',
+    },
+  });
+
+  it('stamps each delivery with its properties and channel generation', async () => {
+    await newChannel();
+    const box = captureDelivery();
+    const received: RabbitMessage[] = [];
+    await client.consume('q', async (m) => {
+      received.push(m);
+    }, 5);
+    const raw = rawMessage();
+    box.deliver!(raw);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received[0]).toMatchObject({
+      content: raw.content,
+      headers: { h: 1 },
+      messageId: 'm-1',
+      type: 'order.placed',
+      contentType: 'application/json',
+      raw,
+    });
+    expect(typeof received[0]?.generation).toBe('number');
+  });
+
+  it('ignores ack and reject for a message from a channel that was replaced', async () => {
+    await newChannel();
+    const box = captureDelivery();
+    const received: RabbitMessage[] = [];
+    await client.consume('q', async (m) => {
+      received.push(m);
+    }, 5);
+    box.deliver!(rawMessage());
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    const message = received[0]!;
+
+    await newChannel(); // reconnect: a new channel, new delivery tags
+    client.ack(message);
+    client.reject(message);
+
+    expect(mocks.channel.ack).not.toHaveBeenCalled();
+    expect(mocks.channel.nack).not.toHaveBeenCalled();
+    expect(logWarn).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores ack after the channel wrapper closed', async () => {
+    await newChannel();
+    const message = {
+      content: Buffer.from('x'),
+      headers: undefined,
+      generation: 0,
+      raw: {},
+    } as unknown as RabbitMessage;
+    const box = captureDelivery();
+    const received: RabbitMessage[] = [];
+    await client.consume('q', async (m) => {
+      received.push(m);
+    }, 5);
+    box.deliver!(rawMessage());
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    mocks.handlers['channel:close']?.(undefined);
+    client.ack(received[0]!);
+    client.ack(message);
+    expect(mocks.channel.ack).not.toHaveBeenCalled();
+  });
+
+  it('acks and rejects on the channel that delivered the message', async () => {
+    await newChannel();
+    const box = captureDelivery();
+    const received: RabbitMessage[] = [];
+    await client.consume('q', async (m) => {
+      received.push(m);
+    }, 5);
+    const raw = rawMessage();
+    box.deliver!(raw);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    client.ack(received[0]!);
+    client.reject(received[0]!);
+    expect(mocks.channel.ack).toHaveBeenCalledWith(raw);
+    expect(mocks.channel.nack).toHaveBeenCalledWith(raw, false, false);
+  });
+
+  it('logs an ack that throws and does not reject the message', async () => {
+    await newChannel();
+    mocks.channel.ack.mockImplementationOnce(() => {
+      throw new Error('IllegalOperationError: channel closed');
+    });
+    const box = captureDelivery();
+    await client.consume('q', async (m) => client.ack(m), 5);
+    box.deliver!(rawMessage());
+    await vi.waitFor(() => expect(logError).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(logError.mock.calls[0]?.[0])).toContain('channel closed');
+    expect(mocks.channel.nack).not.toHaveBeenCalled();
+  });
+
+  it('logs a nack that throws instead of throwing', async () => {
+    await newChannel();
+    mocks.channel.nack.mockImplementationOnce(() => {
+      throw new Error('nack broke');
+    });
+    const box = captureDelivery();
+    await client.consume('q', () => Promise.reject(new Error('boom')), 5);
+    box.deliver!(rawMessage());
+    await vi.waitFor(() => expect(logError).toHaveBeenCalledTimes(2));
+    expect(String(logError.mock.calls[1]?.[0])).toContain('nack broke');
+  });
+
+  it('catches a handler that throws synchronously and nacks the message', async () => {
+    await newChannel();
+    const box = captureDelivery();
+    const onMessage = vi.fn((): Promise<void> => {
+      throw new Error('sync boom');
+    });
+    await client.consume('q', onMessage, 5);
+    const raw = rawMessage();
+    expect(() => box.deliver!(raw)).not.toThrow();
+    await vi.waitFor(() =>
+      expect(mocks.channel.nack).toHaveBeenCalledWith(raw, false, false),
+    );
+    expect(String(logError.mock.calls[0]?.[0])).toContain('sync boom');
+  });
+
+  it('sends to a queue with the original message properties', async () => {
+    await client.sendToQueue('q.dlq', Buffer.from('x'), {
+      headers: { h: 1 },
+      messageId: 'm-1',
+      type: 'order.placed',
+      contentType: 'application/json',
+    });
+    expect(mocks.channel.sendToQueue).toHaveBeenCalledWith(
+      'q.dlq',
+      Buffer.from('x'),
+      {
+        persistent: true,
+        headers: { h: 1 },
+        messageId: 'm-1',
+        type: 'order.placed',
+        contentType: 'application/json',
+      },
+    );
   });
 });
