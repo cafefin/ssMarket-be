@@ -281,7 +281,17 @@ export class OrdersService {
         tx,
         orderEvent(
           'order.edited',
-          { ...order, totalAmount: total },
+          {
+            id: order.id,
+            code: order.code,
+            buyerId: order.buyerId,
+            sellerId: order.sellerId,
+            totalAmount: total,
+            buyer: order.buyer,
+            seller: order.seller,
+            campaign: order.campaign,
+            lines: order.lines,
+          },
           OrderActor.Buyer,
         ),
       );
@@ -639,9 +649,12 @@ export class OrdersService {
             ids.push(orderId);
             // The insert just happened in this transaction, so the row is there.
             const placed = await this.orders.findWithRelations(tx, orderId);
+            if (!placed) {
+              throw new Error(`Order ${orderId} vanished inside its transaction`);
+            }
             await this.outbox.add(
               tx,
-              orderEvent('order.placed', placed as Order, OrderActor.Buyer),
+              orderEvent('order.placed', placed, OrderActor.Buyer),
             );
           }
           await withinTransaction?.(tx);
