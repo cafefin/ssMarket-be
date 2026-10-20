@@ -71,10 +71,18 @@ export class EnvironmentVariables {
   UPLOAD_DIR: string = './uploads';
 }
 
-export function validateEnv(
+export class WorkerEnvironmentVariables extends EnvironmentVariables {
+  /** amqp://user:pass@host:port/vhost. Required by the worker only. */
+  @IsString()
+  @MinLength(1)
+  RABBITMQ_URL!: string;
+}
+
+function validateWith<T extends EnvironmentVariables>(
+  cls: new () => T,
   config: Record<string, unknown>,
-): EnvironmentVariables {
-  const validated = plainToInstance(EnvironmentVariables, config, {
+): T {
+  const validated = plainToInstance(cls, config, {
     enableImplicitConversion: true,
   });
   const errors = validateSync(validated, { skipMissingProperties: false });
@@ -95,4 +103,16 @@ export function validateEnv(
   parseAdminEmails(validated.ADMIN_EMAILS);
 
   return validated;
+}
+
+export function validateEnv(
+  config: Record<string, unknown>,
+): EnvironmentVariables {
+  return validateWith(EnvironmentVariables, config);
+}
+
+export function validateWorkerEnv(
+  config: Record<string, unknown>,
+): WorkerEnvironmentVariables {
+  return validateWith(WorkerEnvironmentVariables, config);
 }

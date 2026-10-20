@@ -1,4 +1,4 @@
-import { validateEnv } from './env.validation.js';
+import { validateEnv, validateWorkerEnv } from './env.validation.js';
 
 const valid = {
   NODE_ENV: 'development',
@@ -93,5 +93,36 @@ describe('validateEnv', () => {
         'Invalid ADMIN_EMAILS entry: nope',
       );
     });
+  });
+});
+
+describe('validateWorkerEnv', () => {
+  const rabbit = 'amqp://ssmarket:ssmarket@localhost:5673';
+
+  it('returns RABBITMQ_URL', () => {
+    const env = validateWorkerEnv({ ...valid, RABBITMQ_URL: rabbit });
+
+    expect(env.RABBITMQ_URL).toBe(rabbit);
+  });
+
+  it('requires RABBITMQ_URL', () => {
+    expect(() => validateWorkerEnv(valid)).toThrow(
+      'Invalid environment variables: RABBITMQ_URL',
+    );
+  });
+
+  it('keeps the API rules', () => {
+    expect(() =>
+      validateWorkerEnv({
+        ...valid,
+        RABBITMQ_URL: rabbit,
+        NODE_ENV: 'production',
+        DEV_LOGIN_ENABLED: 'true',
+      }),
+    ).toThrow('DEV_LOGIN_ENABLED must not be true in production');
+  });
+
+  it('is not required by the API validator', () => {
+    expect(() => validateEnv(valid)).not.toThrow();
   });
 });

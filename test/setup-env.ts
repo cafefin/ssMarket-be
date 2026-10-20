@@ -12,6 +12,11 @@ process.env.DATABASE_URL =
   'postgres://ssmarket:ssmarket@localhost:5433/ssmarket_test';
 process.env.REDIS_URL =
   process.env.TEST_REDIS_URL ?? 'redis://localhost:6380/1';
+// A separate vhost keeps a running `pnpm dev:worker` (default vhost) away from
+// test messages.
+process.env.RABBITMQ_URL =
+  process.env.TEST_RABBITMQ_URL ??
+  'amqp://ssmarket:ssmarket@localhost:5673/ssmarket_test';
 process.env.GOOGLE_CLIENT_ID = 'test-client-id';
 process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 process.env.ALLOWED_EMAIL_DOMAIN = 'example.com';

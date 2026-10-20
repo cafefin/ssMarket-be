@@ -1,4 +1,4 @@
-# Host ports are 5433 and 6380 so this project can run next to other local
+# Host ports are 5433, 6380, 5673 and 15673 so this project can run next to other local
 # Postgres and Redis instances that already use the default ports.
 services:
   postgres:
@@ -30,6 +30,23 @@ services:
       timeout: 5s
       retries: 10
 
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ssmarket
+      RABBITMQ_DEFAULT_PASS: ssmarket
+    ports:
+      - '5673:5672'
+      - '15673:15672'
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:
