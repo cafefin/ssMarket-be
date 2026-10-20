@@ -84,8 +84,8 @@ export class ChatChannelRepository {
   async recordDelivery(row: NewChatDelivery, tx?: Tx): Promise<void> {
     const runner = tx ?? this.deliveries.manager;
     await runner.query(
-      `INSERT INTO chat_deliveries (event_id, event_type, seller_id, outcome, message, error)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO chat_deliveries (event_id, event_type, seller_id, outcome, message, error, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING`,
       [
         row.eventId,
@@ -94,6 +94,7 @@ export class ChatChannelRepository {
         row.outcome,
         row.message,
         row.error,
+        new Date(), // millisecond precision, so the paging cursor is exact
       ],
     );
   }

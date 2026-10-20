@@ -7,10 +7,12 @@ import type { ChatChannelRepository } from './chat-channel.repository.js';
 import {
   CHAT_TEMPLATE_TYPES,
   DEFAULT_TEMPLATES,
+  sampleVariables,
 } from './chat-templates.js';
 import type { GoogleChatClient } from './google-chat.client.js';
 
-const WEBHOOK = 'https://chat.googleapis.com/v1/spaces/AAA/messages?key=k&token=abcd';
+const WEBHOOK =
+  'https://chat.googleapis.com/v1/spaces/AAA/messages?key=k&token=abcd';
 const now = new Date('2026-01-02T03:04:05.000Z');
 
 const settings = (over: Record<string, unknown> = {}) => ({
@@ -40,13 +42,16 @@ describe('ChatChannelService', () => {
   beforeEach(() => {
     repo = {
       getSettings: vi.fn().mockResolvedValue(settings()),
-      saveSettings: vi.fn().mockImplementation(async (fields) =>
-        settings(fields),
-      ),
+      saveSettings: vi
+        .fn()
+        .mockImplementation(async (fields) => settings(fields)),
       listTemplates: vi.fn().mockResolvedValue(templates()),
-      getTemplate: vi.fn().mockImplementation(async (type: string) =>
-        templates().find((t) => t.eventType === type) ?? null,
-      ),
+      getTemplate: vi
+        .fn()
+        .mockImplementation(
+          async (type: string) =>
+            templates().find((t) => t.eventType === type) ?? null,
+        ),
       saveTemplate: vi.fn().mockImplementation(async (type, fields) => ({
         eventType: type,
         ...fields,
@@ -60,7 +65,10 @@ describe('ChatChannelService', () => {
     service = new ChatChannelService(
       repo as unknown as ChatChannelRepository,
       client as unknown as GoogleChatClient,
-      { get: () => 'http://localhost:3000/' } as unknown as ConfigService<never, true>,
+      { get: () => 'http://localhost:3000/' } as unknown as ConfigService<
+        never,
+        true
+      >,
     );
   });
 
@@ -106,7 +114,10 @@ describe('ChatChannelService', () => {
       await service.updateSettings('a', input);
       const [fields, by] = repo.saveSettings.mock.calls[0] as [object, string];
       expect(fields).not.toHaveProperty('webhookUrl');
-      expect(fields).toMatchObject({ maxPerHour: 5, sellerCooldownMinutes: 10 });
+      expect(fields).toMatchObject({
+        maxPerHour: 5,
+        sellerCooldownMinutes: 10,
+      });
       expect(by).toBe('a');
     });
 
@@ -167,7 +178,9 @@ describe('ChatChannelService', () => {
 
     it('keeps digest items unsanitized', () => {
       const { message } = service.preview('chat.digest', '{{items}}');
-      expect(message).toContain('*');
+      const { items } = sampleVariables('chat.digest', 'http://localhost:3000');
+      expect(items).toContain('*');
+      expect(message).toContain(items);
     });
 
     it('404s and 422s', () => {
@@ -205,9 +218,15 @@ describe('ChatChannelService', () => {
 
     it('uses the saved template when none is given', async () => {
       repo.getSettings.mockResolvedValue(settings({ webhookUrl: WEBHOOK }));
+      repo.getTemplate.mockResolvedValue({
+        ...templates()[0],
+        template: 'Đã lưu: {{sellerName}}',
+      });
       await service.sendTest('listing.published');
-      const text = client.send.mock.calls[0][1] as string;
-      expect(text.startsWith('[Thử] 🆕')).toBe(true);
+      expect(client.send).toHaveBeenCalledWith(
+        WEBHOOK,
+        '[Thử] Đã lưu: Nguyễn Văn An',
+      );
     });
 
     it('records a failed row and answers 502', async () => {
@@ -237,7 +256,9 @@ describe('ChatChannelService', () => {
   });
 
   describe('listDeliveries', () => {
-    const row = (over: Partial<ChatDelivery> & { sellerName?: string | null }) =>
+    const row = (
+      over: Partial<ChatDelivery> & { sellerName?: string | null },
+    ) =>
       ({
         id: '11111111-1111-4111-8111-111111111111',
         eventId: null,

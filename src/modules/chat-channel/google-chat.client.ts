@@ -32,12 +32,15 @@ export class GoogleChatClient {
           const body = (await response.text()).slice(0, 200);
           return { ok: false, error: body ? `${error}: ${body}` : error };
         }
+        await response.body?.cancel().catch(() => undefined);
       } catch (caught) {
-        // Node's fetch errors do not include the URL; keep only the message.
+        // Never use the message: some errors (e.g. a bad URL) quote the webhook URL.
+        const failure = caught as Error & { cause?: { code?: string } };
+        const code = failure.cause?.code;
         error =
-          (caught as Error).name === 'TimeoutError'
+          failure.name === 'TimeoutError'
             ? 'timed out after 5 s'
-            : (caught as Error).message;
+            : `network error (${failure.name}${code ? ` ${code}` : ''})`;
       }
     }
     return { ok: false, error };

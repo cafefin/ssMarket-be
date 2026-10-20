@@ -3,11 +3,14 @@ import { GoogleChatClient } from './google-chat.client.js';
 const URL_WITH_SECRET =
   'https://chat.googleapis.com/v1/spaces/AAA/messages?key=K&token=SECRET';
 
+const cancelBody = vi.fn().mockResolvedValue(undefined);
+
 const reply = (status: number, body = ''): Response =>
   ({
     ok: status >= 200 && status < 300,
     status,
     text: async () => body,
+    body: { cancel: cancelBody },
   }) as unknown as Response;
 
 describe('GoogleChatClient', () => {
@@ -16,6 +19,7 @@ describe('GoogleChatClient', () => {
   let client: GoogleChatClient;
 
   beforeEach(() => {
+    cancelBody.mockClear();
     fetchFn = vi.fn();
     sleep = vi.fn().mockResolvedValue(undefined);
     client = new GoogleChatClient(
@@ -26,7 +30,9 @@ describe('GoogleChatClient', () => {
 
   it('posts the text once and succeeds on 200', async () => {
     fetchFn.mockResolvedValue(reply(200));
-    expect(await client.send(URL_WITH_SECRET, 'xin chào')).toEqual({ ok: true });
+    expect(await client.send(URL_WITH_SECRET, 'xin chào')).toEqual({
+      ok: true,
+    });
     expect(fetchFn).toHaveBeenCalledTimes(1);
     const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(URL_WITH_SECRET);
@@ -74,13 +80,32 @@ describe('GoogleChatClient', () => {
     });
   });
 
-  it('retries network errors and reports the message', async () => {
-    fetchFn.mockRejectedValue(new Error('fetch failed'));
+  it('releases the body of a response it will retry', async () => {
+    fetchFn
+      .mockResolvedValueOnce(reply(503))
+      .mockResolvedValueOnce(reply(429))
+      .mockResolvedValueOnce(reply(200));
+    await client.send(URL_WITH_SECRET, 'x');
+    expect(cancelBody).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries network errors and reports only the error class and code', async () => {
+    const error = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('x'), { code: 'ECONNRESET' }),
+    });
+    fetchFn.mockRejectedValue(error);
     expect(await client.send(URL_WITH_SECRET, 'x')).toEqual({
       ok: false,
-      error: 'fetch failed',
+      error: 'network error (TypeError ECONNRESET)',
     });
     expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it('never returns the message of a caught error', async () => {
+    fetchFn.mockRejectedValue(new TypeError(`Invalid URL ${URL_WITH_SECRET}`));
+    const result = await client.send(URL_WITH_SECRET, 'x');
+    expect(result).toEqual({ ok: false, error: 'network error (TypeError)' });
+    expect(JSON.stringify(result)).not.toContain('SECRET');
   });
 
   it('reports a timeout without the URL', async () => {

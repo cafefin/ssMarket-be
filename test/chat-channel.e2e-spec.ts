@@ -90,9 +90,9 @@ describe('Admin chat channel API', () => {
       maxPerHour: 10,
       sellerCooldownMinutes: 30,
     });
-    expect(response.body.templates.map((t: { eventType: string }) => t.eventType)).toEqual([
-      ...CHAT_TEMPLATE_TYPES,
-    ]);
+    expect(
+      response.body.templates.map((t: { eventType: string }) => t.eventType),
+    ).toEqual([...CHAT_TEMPLATE_TYPES]);
     expect(response.body.templates).toHaveLength(4);
     expect(JSON.stringify(response.body)).not.toContain('webhookUrl');
     expect(JSON.stringify(response.body)).not.toContain('googleapis');
@@ -108,7 +108,10 @@ describe('Admin chat channel API', () => {
     expect(JSON.stringify(saved.body)).not.toContain('googleapis');
     expect(await webhookInDb()).toBe(WEBHOOK);
 
-    await admin.put(BASE).send({ ...valid, enabled: true }).expect(200);
+    await admin
+      .put(BASE)
+      .send({ ...valid, enabled: true })
+      .expect(200);
     expect(await webhookInDb()).toBe(WEBHOOK);
 
     const removed = await admin
@@ -133,7 +136,10 @@ describe('Admin chat channel API', () => {
       .expect(200);
     expect(noLimit.body.maxPerHour).toBeNull();
 
-    await admin.put(BASE).send({ ...valid, maxPerHour: 61 }).expect(422);
+    await admin
+      .put(BASE)
+      .send({ ...valid, maxPerHour: 61 })
+      .expect(422);
     await admin
       .put(BASE)
       .send({ ...valid, webhookUrl: 'http://chat.googleapis.com/v1/spaces/x' })
@@ -190,7 +196,10 @@ describe('Admin chat channel API', () => {
     });
 
     it('sends to the webhook and records a test row', async () => {
-      await admin.put(BASE).send({ ...valid, webhookUrl: WEBHOOK }).expect(200);
+      await admin
+        .put(BASE)
+        .send({ ...valid, webhookUrl: WEBHOOK })
+        .expect(200);
       const response = await admin
         .post(`${BASE}/templates/campaign.opened/test`)
         .send({ template: 'Chào {{sellerName}}' })
@@ -201,12 +210,21 @@ describe('Admin chat channel API', () => {
       expect(fake.received[0].path).toMatch(/^\/v1\/spaces\/AAAA\/messages/);
       const rows = (await dataSource.query(
         'SELECT outcome, event_id, seller_id FROM chat_deliveries',
-      )) as { outcome: string; event_id: string | null; seller_id: string | null }[];
-      expect(rows).toEqual([{ outcome: 'test', event_id: null, seller_id: null }]);
+      )) as {
+        outcome: string;
+        event_id: string | null;
+        seller_id: string | null;
+      }[];
+      expect(rows).toEqual([
+        { outcome: 'test', event_id: null, seller_id: null },
+      ]);
     });
 
     it('answers 502 and records a failed row when Google refuses', async () => {
-      await admin.put(BASE).send({ ...valid, webhookUrl: WEBHOOK }).expect(200);
+      await admin
+        .put(BASE)
+        .send({ ...valid, webhookUrl: WEBHOOK })
+        .expect(200);
       fake.respondWith(400);
       const response = await admin
         .post(`${BASE}/templates/campaign.opened/test`)
@@ -242,5 +260,29 @@ describe('Admin chat channel API', () => {
     expect(second.body.items).toHaveLength(5);
     expect(second.body.items[0].message).toBe('m51');
     expect(second.body.nextCursor).toBeNull();
+  });
+
+  it('returns every delivery exactly once when rows share a timestamp at a page boundary', async () => {
+    await dataSource.query(
+      `INSERT INTO chat_deliveries (event_type, outcome, message, created_at)
+       SELECT 'campaign.opened', 'sent', 'm' || g,
+              CASE WHEN g IN (50, 51) THEN '2026-01-01T00:00:00.123Z'::timestamptz
+                   ELSE '2026-01-01T00:00:00.123Z'::timestamptz + ((100 - g) || ' seconds')::interval END
+       FROM generate_series(1, 60) g`,
+    );
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const res: {
+        body: { items: { id: string }[]; nextCursor: string | null };
+      } = await admin
+        .get(`${BASE}/deliveries`)
+        .query(cursor ? { cursor } : {})
+        .expect(200);
+      ids.push(...res.body.items.map((i: { id: string }) => i.id));
+      cursor = res.body.nextCursor;
+    } while (cursor);
+    expect(ids).toHaveLength(60);
+    expect(new Set(ids).size).toBe(60);
   });
 });
