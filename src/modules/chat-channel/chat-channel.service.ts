@@ -200,7 +200,7 @@ export class ChatChannelService {
   private toTemplateDto(row: ChatTemplate): ChatTemplateDto {
     const type = row.eventType as ChatTemplateType;
     return {
-      eventType: row.eventType,
+      eventType: type,
       enabled: row.enabled,
       template: row.template,
       variables: [...TEMPLATE_VARIABLES[type]],
@@ -218,7 +218,8 @@ export class ChatChannelService {
     return {
       id: row.id,
       createdAt: row.createdAt.toISOString(),
-      eventType: row.eventType,
+      // Written only by the delivery service and the test send, always a known type.
+      eventType: row.eventType as ChatTemplateType,
       sellerName: row.sellerName,
       outcome: row.outcome,
       message: row.message,

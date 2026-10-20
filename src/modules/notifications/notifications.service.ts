@@ -7,9 +7,14 @@ import type { Notification } from './notification.entity.js';
 import type {
   NotificationDto,
   NotificationPageDto,
+  NotificationParamsDto,
   UnreadCountDto,
 } from './dto/notification.dto.js';
-import { isOrderEvent, type EventEnvelope } from '../../events/domain-events.js';
+import {
+  isOrderEvent,
+  type EventEnvelope,
+  type OrderEventType,
+} from '../../events/domain-events.js';
 import { notificationTargets } from './notification-rules.js';
 import { NotificationsRepository } from './notifications.repository.js';
 
@@ -77,8 +82,9 @@ export class NotificationsService {
   private toDto(row: Notification): NotificationDto {
     return {
       id: row.id,
-      type: row.type,
-      params: row.params,
+      // Both columns are written only by this service, from a typed target.
+      type: row.type as OrderEventType,
+      params: row.params as unknown as NotificationParamsDto,
       readAt: row.readAt ? row.readAt.toISOString() : null,
       createdAt: row.createdAt.toISOString(),
     };

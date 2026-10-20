@@ -7,10 +7,14 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { ChatOutcome } from '../chat-delivery.entity.js';
+import {
+  CHAT_TEMPLATE_TYPES,
+  type ChatTemplateType,
+} from '../chat-templates.js';
 
 export class ChatTemplateDto {
-  @ApiProperty({ example: 'campaign.opened' })
-  eventType!: string;
+  @ApiProperty({ enum: CHAT_TEMPLATE_TYPES, enumName: 'ChatTemplateType' })
+  eventType!: ChatTemplateType;
 
   @ApiProperty()
   enabled!: boolean;
@@ -115,8 +119,8 @@ export class ChatDeliveryDto {
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
 
-  @ApiProperty()
-  eventType!: string;
+  @ApiProperty({ enum: CHAT_TEMPLATE_TYPES, enumName: 'ChatTemplateType' })
+  eventType!: ChatTemplateType;
 
   @ApiProperty({ type: String, nullable: true })
   sellerName!: string | null;

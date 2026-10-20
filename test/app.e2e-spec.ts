@@ -369,5 +369,82 @@ describe('ssMarket API', () => {
       );
       expect(document.components.schemas.UserResponseDto).toBeDefined();
     });
+
+    it('types notifications and chat events as enums', async () => {
+      const response = await request(server()).get('/docs-json').expect(200);
+      type Schema = {
+        properties?: Record<string, Schema>;
+        required?: string[];
+        enum?: string[];
+        type?: string;
+        nullable?: boolean;
+        $ref?: string;
+        allOf?: Schema[];
+      };
+      const schemas = (
+        response.body as { components: { schemas: Record<string, Schema> } }
+      ).components.schemas;
+      const ref = (s: Schema | undefined): string | undefined =>
+        s?.$ref ?? s?.allOf?.[0]?.$ref;
+
+      expect(schemas.NotificationType?.enum).toEqual([
+        'order.placed',
+        'order.edited',
+        'order.payment_reported',
+        'order.payment_confirmed',
+        'order.payment_rejected',
+        'order.delivered',
+        'order.cancelled',
+      ]);
+      expect(schemas.ChatTemplateType?.enum).toEqual([
+        'campaign.opened',
+        'campaign.reopened',
+        'listing.published',
+        'chat.digest',
+      ]);
+      expect(schemas.NotificationActor?.enum).toEqual(['buyer', 'seller']);
+      expect(schemas.NotificationRole?.enum).toEqual(['buyer', 'seller']);
+
+      const notification = schemas.NotificationDto?.properties ?? {};
+      expect(ref(notification.type)).toBe('#/components/schemas/NotificationType');
+      expect(ref(notification.params)).toBe(
+        '#/components/schemas/NotificationParamsDto',
+      );
+
+      const params = schemas.NotificationParamsDto;
+      expect(params?.required).toEqual(
+        expect.arrayContaining([
+          'orderId',
+          'orderCode',
+          'buyerId',
+          'buyerName',
+          'sellerId',
+          'sellerName',
+          'title',
+          'total',
+          'actor',
+          'reason',
+          'role',
+        ]),
+      );
+      expect(params?.properties?.total?.type).toBe('integer');
+      expect(params?.properties?.reason).toMatchObject({
+        type: 'string',
+        nullable: true,
+      });
+      expect(ref(params?.properties?.actor)).toBe(
+        '#/components/schemas/NotificationActor',
+      );
+      expect(ref(params?.properties?.role)).toBe(
+        '#/components/schemas/NotificationRole',
+      );
+      expect(schemas.UnreadCountDto?.properties?.count?.type).toBe('integer');
+      expect(ref(schemas.ChatTemplateDto?.properties?.eventType)).toBe(
+        '#/components/schemas/ChatTemplateType',
+      );
+      expect(ref(schemas.ChatDeliveryDto?.properties?.eventType)).toBe(
+        '#/components/schemas/ChatTemplateType',
+      );
+    });
   });
 });
